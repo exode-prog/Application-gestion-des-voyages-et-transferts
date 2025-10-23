@@ -1,0 +1,779 @@
+const nodemailer = require('nodemailer');
+const User = require('../models/User');
+
+// Configuration du transporteur email
+const createTransporter = () => {
+  console.log('🔧 Création du transporteur email...');
+  console.log('📧 Email USER:', process.env.EMAIL_USER ? '✅ Défini' : '❌ MANQUANT');
+  console.log('🔑 Email PASS:', process.env.EMAIL_PASSWORD ? '✅ Défini' : '❌ MANQUANT');
+  
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD
+    }
+  });
+};
+
+// Récupérer tous les emails des super admins ET admin_bank
+const getSuperAdminEmails = async () => {
+  try {
+    console.log('👥 Recherche des administrateurs...');
+    
+    const superAdmins = await User.find({ 
+      role: { $in: ['admin_bank', 'super_admin'] },
+      isActive: true 
+    }).select('email username');
+    
+    console.log(`✅ ${superAdmins.length} admin(s) trouvé(s):`, 
+      superAdmins.map(a => `${a.username} (${a.email})`));
+    
+    return superAdmins;
+  } catch (error) {
+    console.error('❌ Erreur récupération super admins:', error);
+    return [];
+  }
+};
+
+// ✅ NOUVELLE FONCTION : Envoyer notification pour TOUS les types de documents
+const sendNewSubmissionNotification = async (document, type) => {
+  console.log('\n📧 =================================');
+  console.log('📧 DÉBUT ENVOI NOTIFICATION EMAIL');
+  console.log('📧 =================================');
+  console.log('📋 Type:', type);
+  console.log('📄 Document référence:', document.reference);
+  console.log('👤 Client:', `${document.nom} ${document.prenom}`);
+  
+  try {
+    const superAdmins = await getSuperAdminEmails();
+    
+    if (superAdmins.length === 0) {
+      console.log('❌ ARRÊT: Aucun admin trouvé pour la notification');
+      return { success: false, message: 'Aucun destinataire' };
+    }
+
+    console.log('🚀 Création du transporteur...');
+    const transporter = createTransporter();
+    
+    // ✅ Vérifier la connexion SMTP
+    try {
+      console.log('🔍 Vérification connexion SMTP...');
+      await transporter.verify();
+      console.log('✅ Connexion SMTP réussie');
+    } catch (smtpError) {
+      console.error('❌ ERREUR SMTP:', smtpError);
+      return { 
+        success: false, 
+        message: `Erreur SMTP: ${smtpError.message}` 
+      };
+    }
+    
+    // ✅ Déterminer le titre et les détails selon le type
+    const typeInfo = getTypeInfo(type, document);
+    console.log('📝 Configuration email:', typeInfo);
+    
+    console.log(`📤 Envoi à ${superAdmins.length} destinataire(s)...`);
+    
+    const emailPromises = superAdmins.map((admin, index) => {
+      console.log(`  ${index + 1}. ${admin.email} (${admin.username})`);
+      
+      const mailOptions = {
+        from: `"DataCollectApp" <${process.env.EMAIL_USER}>`,
+        to: admin.email,
+        subject: typeInfo.subject,
+        html: generateEmailTemplate(admin, document, typeInfo)
+      };
+      
+      console.log(`  📨 Options email pour ${admin.email}:`, {
+        from: mailOptions.from,
+        to: mailOptions.to,
+        subject: mailOptions.subject
+      });
+      
+      return transporter.sendMail(mailOptions)
+        .then(result => {
+          console.log(`✅ Email envoyé à ${admin.email}:`, {
+            messageId: result.messageId,
+            response: result.response
+          });
+          return result;
+        })
+        .catch(error => {
+          console.error(`❌ Erreur envoi à ${admin.email}:`, error);
+          throw error;
+        });
+    });
+
+    console.log('⏳ Envoi des emails en cours...');
+    const results = await Promise.allSettled(emailPromises);
+    
+    // Analyser les résultats
+    const successful = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    
+    console.log(`📊 RÉSULTATS ENVOI: ${successful} succès, ${failed} échecs`);
+    
+    if (successful > 0) {
+      console.log(`✅ Notifications ${type} envoyées avec succès`);
+      return { 
+        success: true, 
+        message: `Email envoyé à ${successful}/${superAdmins.length} admin(s)`,
+        recipients: superAdmins.map(a => a.email),
+        successful,
+        failed
+      };
+    } else {
+      console.log('❌ Aucun email envoyé avec succès');
+      return { 
+        success: false, 
+        message: 'Échec de tous les envois',
+        recipients: superAdmins.map(a => a.email),
+        successful: 0,
+        failed
+      };
+    }
+
+  } catch (error) {
+    console.error('❌ ERREUR GLOBALE envoi email:', error);
+    return { 
+      success: false, 
+      message: error.message 
+    };
+  } finally {
+    console.log('📧 =================================');
+    console.log('📧 FIN ENVOI NOTIFICATION EMAIL');
+    console.log('📧 =================================\n');
+  }
+};
+
+// ✅ FONCTION : Obtenir les informations selon le type
+const getTypeInfo = (type, document) => {
+  console.log(`🎯 Configuration type ${type}...`);
+  
+  if (type === 'voyage') {
+    const info = {
+      subject: `Nouvelle soumission de documents de voyage - ${document.reference}`,
+      typeLabel: 'Documents de Voyage',
+      
+      details: `
+        <div class="info-row">
+          <div class="info-label">Pays à visiter :</div>
+          <div class="info-value">${document.pays}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">Raison du voyage :</div>
+          <div class="info-value">${document.raison === 'autres' ? document.autreRaison : document.raison}</div>
+        </div>
+      `
+    };
+    console.log('✅ Type voyage configuré:', info.subject);
+    return info;
+  } else {
+    const info = {
+      subject: ` Nouveau dossier de transfert - ${document.reference}`,
+      typeLabel: 'Dossier de Transfert',
+      
+      details: `
+        <div class="info-row">
+          <div class="info-label">Type de transfert :</div>
+          <div class="info-value">${document.typeTransfert}</div>
+        </div>
+      `
+    };
+    console.log('✅ Type transfert configuré:', info.subject);
+    return info;
+  }
+};
+
+// ✅ FONCTION : Générer le template email RESPONSIVE
+const generateEmailTemplate = (admin, document, typeInfo) => {
+  console.log(`📝 Génération template pour ${admin.email}...`);
+  
+  return `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>${typeInfo.subject}</title>
+      <style>
+        /* RESET CSS */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        /* RESPONSIVE CONTAINER */
+        .container {
+          max-width: 100%;
+          width: 100%;
+          margin: 0 auto;
+          padding: 10px;
+          background-color: #f5f7fa;
+          font-family: Arial, Helvetica, sans-serif;
+          line-height: 1.5;
+        }
+        
+        /* HEADER */
+        .header {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          padding: 25px 15px;
+          border-radius: 10px 10px 0 0;
+          text-align: center;
+        }
+        
+        .header h1 {
+          color: white;
+          font-size: 24px;
+          margin-bottom: 8px;
+          font-weight: bold;
+        }
+        
+        .header p {
+          color: #e0e7ff;
+          font-size: 16px;
+          margin: 0;
+        }
+        
+        /* CONTENT */
+        .content {
+          background-color: white;
+          padding: 20px 15px;
+          border-radius: 0 0 10px 10px;
+        }
+        
+        /* GREETING */
+        .greeting {
+          color: #4a5568;
+          font-size: 16px;
+          margin-bottom: 20px;
+        }
+        
+        .greeting strong {
+          color: #2d3748;
+        }
+        
+        /* MESSAGE */
+        .message {
+          color: #4a5568;
+          font-size: 16px;
+          margin-bottom: 25px;
+          line-height: 1.6;
+        }
+        
+        /* INFO CARD */
+        .info-card {
+          background-color: #ebf4ff;
+          border-left: 4px solid #3182ce;
+          padding: 20px 15px;
+          margin: 20px 0;
+          border-radius: 8px;
+        }
+        
+        .info-card h3 {
+          color: #2c5282;
+          font-size: 18px;
+          margin-bottom: 15px;
+          font-weight: bold;
+        }
+        
+        /* INFO ROWS - RESPONSIVE */
+        .info-row {
+          display: flex;
+          flex-direction: column;
+          margin-bottom: 12px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid #cbd5e0;
+        }
+        
+        .info-row:last-child {
+          border-bottom: none;
+          margin-bottom: 0;
+          padding-bottom: 0;
+        }
+        
+        .info-label {
+          color: #4a5568;
+          font-weight: bold;
+          font-size: 14px;
+          margin-bottom: 4px;
+        }
+        
+        .info-value {
+          color: #2d3748;
+          font-size: 15px;
+          word-break: break-word;
+        }
+        
+        /* REFERENCE HIGHLIGHT */
+        .reference {
+          background-color: #e6fffa;
+          border: 1px solid #81e6d9;
+          padding: 12px 15px;
+          border-radius: 8px;
+          margin-top: 15px;
+          text-align: center;
+        }
+        
+        .reference-code {
+          font-family: 'Courier New', monospace;
+          font-size: 16px;
+          font-weight: bold;
+          color: #234e52;
+        }
+        
+        /* FOOTER */
+        .footer {
+          border-top: 1px solid #e2e8f0;
+          padding-top: 20px;
+          margin-top: 25px;
+          text-align: center;
+        }
+        
+        .footer p {
+          color: #718096;
+          font-size: 13px;
+          margin-bottom: 5px;
+        }
+        
+        .footer small {
+          color: #a0aec0;
+          font-size: 11px;
+        }
+        
+        /* DESKTOP OPTIMIZATION */
+        @media (min-width: 480px) {
+          .container {
+            max-width: 450px;
+            padding: 20px;
+          }
+          
+          .info-row {
+            flex-direction: row;
+            align-items: flex-start;
+          }
+          
+          .info-label {
+            width: 140px;
+            min-width: 140px;
+            margin-bottom: 0;
+            margin-right: 15px;
+          }
+          
+          .info-value {
+            flex: 1;
+          }
+        }
+        
+        @media (min-width: 600px) {
+          .container {
+            max-width: 550px;
+          }
+          
+          .content {
+            padding: 25px 20px;
+          }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>DataCollectApp</h1>
+          <p>${typeInfo.icon} ${typeInfo.typeLabel}</p>
+        </div>
+        
+        <div class="content">
+          <p class="greeting">
+            Bonjour <strong>${admin.username}</strong>,
+          </p>
+          
+          <p class="message">
+            Un nouveau ${typeInfo.typeLabel.toLowerCase()} a été soumis sur la plateforme.
+          </p>
+          
+          <div class="info-card">
+            <h3>📋 Informations du client</h3>
+            
+            <div class="info-row">
+              <div class="info-label">Nom complet :</div>
+              <div class="info-value">${document.nom} ${document.prenom}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Email :</div>
+              <div class="info-value">${document.email}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Téléphone :</div>
+              <div class="info-value">${document.telephone}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Profession :</div>
+              <div class="info-value">${document.profession}</div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Sexe :</div>
+              <div class="info-value">${document.sexe === 'H' ? 'Homme' : 'Femme'}</div>
+            </div>
+            
+            ${typeInfo.details}
+            
+            <div class="info-row">
+              <div class="info-label">Nombre de fichiers :</div>
+              <div class="info-value"><strong>${document.sousDossiers[0]?.fichiers?.length || 0}</strong></div>
+            </div>
+            
+            <div class="info-row">
+              <div class="info-label">Période :</div>
+              <div class="info-value">
+                ${new Date(document.dateDebut).toLocaleDateString('fr-FR')} → ${new Date(document.dateFin).toLocaleDateString('fr-FR')}
+              </div>
+            </div>
+            
+            <div class="reference">
+              <div class="info-label">Référence :</div>
+              <div class="reference-code">${document.reference}</div>
+            </div>
+          </div>
+          
+          <div class="footer">
+            <p>📧 Notification automatique de DataCollectApp</p>
+            <small>Ne pas répondre à cet email</small>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+// ✅ NOUVELLE FONCTION : Envoyer notification de rejet
+const sendRejectionNotification = async (document, motifRejet, type) => {
+  console.log('\n📧 =================================');
+  console.log('📧 DÉBUT ENVOI NOTIFICATION REJET');
+  console.log('📧 =================================');
+  console.log('📋 Type:', type);
+  console.log('📄 Document référence:', document.reference);
+  console.log('👤 Client:', `${document.nom} ${document.prenom}`);
+  console.log(' Motif rejet:', motifRejet);
+
+  try {
+    // ✅ 1. Récupérer les emails des superviseurs et agents de saisie
+    const supervisorsAndAgents = await User.find({ 
+      role: { $in: ['superviseur', 'agent_saisie'] },
+      isActive: true 
+    }).select('email username role');
+
+    console.log(`👥 ${supervisorsAndAgents.length} superviseurs/agents trouvés`);
+
+    // ✅ 2. Créer le transporteur email
+    const transporter = createTransporter();
+    
+    // ✅ Vérifier la connexion SMTP
+    try {
+      await transporter.verify();
+      console.log('✅ Connexion SMTP réussie');
+    } catch (smtpError) {
+      console.error('❌ ERREUR SMTP:', smtpError);
+      return { 
+        success: false, 
+        message: `Erreur SMTP: ${smtpError.message}` 
+      };
+    }
+
+    // ✅ 3. Envoyer email au propriétaire du document
+    const ownerEmailResult = await sendRejectionToOwner(transporter, document, motifRejet, type);
+    
+    // ✅ 4. Envoyer emails aux superviseurs et agents
+    const teamEmailResult = await sendRejectionToTeam(transporter, document, motifRejet, type, supervisorsAndAgents);
+
+    console.log('📊 RÉSULTATS ENVOI REJET:');
+    console.log('  ✅ Propriétaire:', ownerEmailResult.success ? 'Envoyé' : 'Échec');
+    console.log('  ✅ Équipe:', teamEmailResult.successful, 'succès,', teamEmailResult.failed, 'échecs');
+
+    return {
+      success: ownerEmailResult.success && teamEmailResult.successful > 0,
+      owner: ownerEmailResult,
+      team: teamEmailResult
+    };
+
+  } catch (error) {
+    console.error('❌ ERREUR GLOBALE envoi notification rejet:', error);
+    return { 
+      success: false, 
+      message: error.message 
+    };
+  } finally {
+    console.log('📧 =================================');
+    console.log('📧 FIN ENVOI NOTIFICATION REJET');
+    console.log('📧 =================================\n');
+  }
+};
+
+// ✅ FONCTION : Envoyer email de rejet au propriétaire
+const sendRejectionToOwner = async (transporter, document, motifRejet, type) => {
+  try {
+    const typeInfo = getTypeInfo(type, document);
+    
+    const mailOptions = {
+      from: `"DataCollectApp - Service Conformité" <${process.env.EMAIL_USER}>`,
+      to: document.email,
+      subject: ` Votre dossier ${document.reference} a été rejeté`,
+      html: generateOwnerRejectionTemplate(document, motifRejet, typeInfo)
+    };
+
+    console.log(`📤 Envoi email rejet à ${document.email}...`);
+    
+    const result = await transporter.sendMail(mailOptions);
+    
+    console.log(`✅ Email rejet envoyé au propriétaire:`, {
+      messageId: result.messageId,
+      to: document.email
+    });
+    
+    return { success: true, messageId: result.messageId };
+    
+  } catch (error) {
+    console.error(`❌ Erreur envoi email rejet propriétaire:`, error);
+    return { success: false, error: error.message };
+  }
+};
+
+// ✅ FONCTION : Envoyer notification aux superviseurs et agents
+const sendRejectionToTeam = async (transporter, document, motifRejet, type, recipients) => {
+  try {
+    if (recipients.length === 0) {
+      console.log('❌ ARRÊT: Aucun destinataire équipe trouvé');
+      return { success: false, message: 'Aucun destinataire équipe' };
+    }
+
+    console.log(`📤 Envoi notifications rejet à ${recipients.length} membres d'équipe...`);
+
+    const emailPromises = recipients.map((user, index) => {
+      console.log(`  ${index + 1}. ${user.email} (${user.username} - ${user.role})`);
+      
+      const mailOptions = {
+        from: `"DataCollectApp - Service Conformité" <${process.env.EMAIL_USER}>`,
+        to: user.email,
+        subject: `🚨 Dossier ${document.reference} rejeté - Action requise`,
+        html: generateTeamRejectionTemplate(user, document, motifRejet, type)
+      };
+      
+      return transporter.sendMail(mailOptions)
+        .then(result => {
+          console.log(`✅ Notification rejet envoyée à ${user.email}`);
+          return { success: true, user: user.email, messageId: result.messageId };
+        })
+        .catch(error => {
+          console.error(`❌ Erreur envoi notification rejet à ${user.email}:`, error);
+          return { success: false, user: user.email, error: error.message };
+        });
+    });
+
+    const results = await Promise.allSettled(emailPromises);
+    
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failed = results.filter(r => r.status === 'fulfilled' && !r.value.success).length + 
+                   results.filter(r => r.status === 'rejected').length;
+
+    console.log(`📊 RÉSULTATS ÉQUIPE: ${successful} succès, ${failed} échecs`);
+    
+    return {
+      successful,
+      failed,
+      total: recipients.length
+    };
+
+  } catch (error) {
+    console.error(' ERREUR envoi notifications équipe:', error);
+    return { successful: 0, failed: recipients.length, error: error.message };
+  }
+};
+
+
+
+
+
+// ✅ TEMPLATE : Email de rejet pour le propriétaire du document
+const generateOwnerRejectionTemplate = (document, motifRejet, typeInfo) => {
+  return `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Dossier Rejeté - ${document.reference}</title>
+      <style>
+        /* Styles similaires à l'email existant mais avec theme rouge */
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif; }
+        .header { background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+        .content { background: white; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb; }
+        .rejection-alert { background: #fef2f2; border: 2px solid #fecaca; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .info-card { background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Dossier Rejeté</h1>
+          <p>DataCollectApp - Service Conformité</p>
+        </div>
+        
+        <div class="content">
+          <p>Bonjour <strong>${document.nom} ${document.prenom}</strong>,</p>
+          
+          <div class="rejection-alert">
+            <h3 style="color: #dc2626; margin-top: 0;">Votre dossier <strong>${document.reference}</strong> a été rejeté par notre service conformité.</h3>
+          </div>
+          
+          <div class="info-card">
+            <h4>📋 Détails du rejet</h4>
+            <p><strong>Motif du rejet :</strong></p>
+            <div style="background: white; padding: 15px; border-radius: 5px; border-left: 4px solid #dc2626; margin: 10px 0;">
+              ${motifRejet}
+            </div>
+            
+            <p><strong>Informations du dossier :</strong></p>
+            <ul>
+              <li><strong>Référence :</strong> ${document.reference}</li>
+              <li><strong>Type :</strong> ${typeInfo.typeLabel}</li>
+              <li><strong>Date de soumission :</strong> ${new Date(document.dateCreation).toLocaleDateString('fr-FR')}</li>
+            </ul>
+          </div>
+          
+          <div style="background: #eff6ff; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <h4 style="color: #1e40af; margin-top: 0;">🔄 Prochaines étapes</h4>
+            <p>Pour régulariser votre dossier, veuillez :</p>
+            <ol>
+              <li>Corriger les éléments mentionnés ci-dessus</li>
+              <li>Resoumettre votre dossier complet</li>
+              <li>Vous assurer que tous les documents requis sont fournis</li>
+            </ol>
+          </div>
+          
+          <p>Si vous avez des questions, n'hésitez pas à nous contacter.</p>
+          
+          <p>Cordialement,<br>
+          <strong>L'équipe Conformité - DataCollectApp</strong></p>
+        </div>
+        
+        <div class="footer">
+          <p>📧 Cet email a été envoyé automatiquement, merci de ne pas y répondre</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+// ✅ TEMPLATE : Notification de rejet pour l'équipe
+const generateTeamRejectionTemplate = (user, document, motifRejet, type) => {
+  const typeInfo = getTypeInfo(type, document);
+  
+  return `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Dossier Rejeté - ${document.reference}</title>
+      <style>
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif; }
+        .header { background: linear-gradient(135deg, #ea580c 0%, #dc2626 100%); padding: 25px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+        .content { background: white; padding: 25px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb; }
+        .alert-box { background: #fffbeb; border: 2px solid #f59e0b; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .info-section { background: #f8fafc; padding: 20px; border-radius: 8px; margin: 15px 0; }
+        .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🚨 Dossier Rejeté - Action Requise</h1>
+          <p>Notification Conformité - DataCollectApp</p>
+        </div>
+        
+        <div class="content">
+          <p>Bonjour <strong>${user.username}</strong>,</p>
+          
+          <div class="alert-box">
+            <h3 style="color: #ea580c; margin-top: 0;">Un dossier a été rejeté par le service conformité</h3>
+            <p>Votre attention est requise concernant ce dossier.</p>
+          </div>
+          
+          <div class="info-section">
+            <h4>📄 Informations du dossier rejeté</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0;">
+              <div>
+                <strong>Référence :</strong><br>
+                <span style="font-weight: bold; color: #dc2626;">${document.reference}</span>
+              </div>
+              <div>
+                <strong>Type :</strong><br>
+                ${typeInfo.typeLabel}
+              </div>
+              <div>
+                <strong>Client :</strong><br>
+                ${document.nom} ${document.prenom}
+              </div>
+              <div>
+                <strong>Email :</strong><br>
+                ${document.email}
+              </div>
+            </div>
+          </div>
+          
+          <div class="info-section">
+            <h4> Motif du rejet</h4>
+            <div style="background: #fef2f2; padding: 15px; border-radius: 5px; border-left: 4px solid #dc2626;">
+              ${motifRejet}
+            </div>
+          </div>
+          
+          <div style="background: #f0fdf4; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <h4 style="color: #15803d; margin-top: 0;">Actions recommandées</h4>
+            <ul>
+              <li>Prendre contact avec le client si nécessaire</li>
+              <li>Vérifier la procédure de correction</li>
+              <li>Suivre le dossier lors de la resoumission</li>
+            </ul>
+          </div>
+          
+          <p><strong>Rôle concerné :</strong> ${user.role}</p>
+          
+          <p>Cordialement,<br>
+          <strong>Service Conformité - DataCollectApp</strong></p>
+        </div>
+        
+        <div class="footer">
+          <p>📧 Notification automatique - Ne pas répondre</p>
+          <p><small>Vous recevez cet email en tant que ${user.role}</small></p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+
+
+
+
+module.exports = {
+  sendNewSubmissionNotification,
+  sendRejectionNotification
+};

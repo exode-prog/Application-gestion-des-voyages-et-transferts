@@ -1,0 +1,36 @@
+const mongoose = require('mongoose');
+
+const DocumentSchema = new mongoose.Schema({
+  nom: {
+    type: String,
+    required: true
+  },
+  prenom: {
+    type: String,
+    required: true
+  },
+  email: {
+    type: String,
+    required: true
+  },
+  telephone: String,
+  motif: String,
+  dateDebut: Date,
+  dateFin: Date,
+  typeDocument: String,
+  statut: {
+    type: String,
+    enum: ['en_attente', 'partiellement_apuré ','apuré ','archivé','rejeté'], 
+    default: 'en_attente'
+  },
+  fileName: String,
+  filePath: String,
+  dateCreation: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: true
+});
+
+module.exports = mongoose.model('Document', DocumentSchema);

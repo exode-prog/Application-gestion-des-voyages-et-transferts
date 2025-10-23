@@ -1,0 +1,174 @@
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const fs = require('fs');
+const path = require('path');
+
+puppeteer.use(StealthPlugin());
+
+class FreeWhatsAppService {
+  constructor() {
+    this.sessionDir = path.join(__dirname, '../whatsapp-session');
+    this.ensureSessionDir();
+  }
+
+  ensureSessionDir() {
+    if (!fs.existsSync(this.sessionDir)) {
+      fs.mkdirSync(this.sessionDir, { recursive: true });
+    }
+  }
+
+  async sendMessage(phoneNumber, message) {
+    let browser;
+    try {
+      console.log('🚀 Démarrage WhatsApp Web automatique...');
+      
+      browser = await puppeteer.launch({
+        headless: true, // ✅ Mode sans interface
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu'
+        ]
+      });
+
+      const page = await browser.newPage();
+      
+      // Charger la session existante si disponible
+      await this.loadSession(page);
+      
+      await page.goto('https://web.whatsapp.com', { 
+        waitUntil: 'networkidle2',
+        timeout: 60000 
+      });
+
+      // Vérifier si connecté
+      const isLoggedIn = await this.checkLoginStatus(page);
+      
+      if (!isLoggedIn) {
+        console.log('🔐 Première connexion nécessaire...');
+        console.log('📱 Scannez le QR code dans les 60 secondes...');
+        
+        // Attendre la connexion
+        await page.waitForSelector('._2_1wd', { timeout: 60000 });
+        await this.saveSession(page);
+        console.log('✅ Connexion réussie! Session sauvegardée.');
+      }
+
+      // Nettoyer le numéro
+      const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
+      
+      // Construire l'URL du message
+      const encodedMessage = encodeURIComponent(message);
+      const chatUrl = `https://web.whatsapp.com/send?phone=${cleanNumber}&text=${encodedMessage}`;
+      
+      console.log(`📤 Envoi à: ${cleanNumber}`);
+      console.log(`💬 Message: ${message}`);
+      
+      await page.goto(chatUrl, { waitUntil: 'networkidle2' });
+      
+      // Attendre que l'interface se charge
+      await page.waitForTimeout(8000);
+      
+      // Vérifier si le numéro existe
+      const invalidNumber = await page.$('span[data-testid="invalid-number"]');
+      if (invalidNumber) {
+        throw new Error('Numéro WhatsApp invalide');
+      }
+      
+      // Envoyer le message
+      await page.waitForSelector('button[data-testid="compose-btn-send"]', { timeout: 10000 });
+      await page.click('button[data-testid="compose-btn-send"]');
+      
+      // Attendre l'envoi
+      await page.waitForTimeout(5000);
+      
+      console.log('✅ Message envoyé avec succès!');
+      return { success: true, method: 'whatsapp_web' };
+      
+    } catch (error) {
+      console.error('❌ Erreur WhatsApp Web:', error.message);
+      return { success: false, error: error.message };
+    } finally {
+      if (browser) {
+        await browser.close();
+      }
+    }
+  }
+
+  async checkLoginStatus(page) {
+    try {
+      await page.waitForSelector('div[data-testid="conversation-panel-wrapper"]', { timeout: 5000 });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async saveSession(page) {
+    const cookies = await page.cookies();
+    const sessionData = { cookies, timestamp: Date.now() };
+    fs.writeFileSync(
+      path.join(this.sessionDir, 'session.json'),
+      JSON.stringify(sessionData, null, 2)
+    );
+  }
+
+  async loadSession(page) {
+    try {
+      const sessionPath = path.join(this.sessionDir, 'session.json');
+      if (fs.existsSync(sessionPath)) {
+        const sessionData = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+        
+        // Vérifier si la session est récente (moins de 7 jours)
+        const sessionAge = Date.now() - sessionData.timestamp;
+        if (sessionAge < 7 * 24 * 60 * 60 * 1000) {
+          await page.setCookie(...sessionData.cookies);
+          return true;
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ Impossible de charger la session:', error.message);
+    }
+    return false;
+  }
+
+  // Méthodes pour votre application
+  async sendAutoTravelConfirmation(clientData) {
+    const message = `Bonjour ${clientData.prenom} ${clientData.nom}, nous avons bien reçu vos documents de voyage pour ${clientData.pays}. Notre équipe les examine et vous recontactera sous 48h. Merci de votre confiance !`;
+    
+    return await this.sendMessage(clientData.telephone, message);
+  }
+
+  async sendAutoTransferConfirmation(clientData) {
+    const message = `Bonjour ${clientData.prenom} ${clientData.nom}, nous avons bien reçu votre dossier de transfert (${clientData.typeTransfert}). Notre équipe l'examine et vous recontactera sous 48h. Merci !`;
+    
+    return await this.sendMessage(clientData.telephone, message);
+  }
+
+  async sendAutoNotification(formData, type) {
+    console.log('\n🚀 ENVOI WHATSAPP WEB AUTOMATIQUE');
+    console.log('👤 Client:', `${formData.prenom} ${formData.nom}`);
+    
+    try {
+      let result;
+      if (type === 'voyage') {
+        result = await this.sendAutoTravelConfirmation(formData);
+      } else {
+        result = await this.sendAutoTransferConfirmation(formData);
+      }
+
+      console.log('📱 Résultat:', result.success ? '✅ SUCCÈS' : '❌ ÉCHEC');
+      return result;
+      
+    } catch (error) {
+      console.error('💥 Erreur WhatsApp Web:', error);
+      return { success: false, error: error.message };
+    }
+  }
+}
+
+module.exports = new FreeWhatsAppService();

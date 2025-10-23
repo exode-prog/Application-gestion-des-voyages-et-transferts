@@ -1,0 +1,555 @@
+const express = require('express');
+const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const Document = require('../models/Document'); // ✅ Utiliser le BON modèle
+const { auth } = require('../middleware/auth');
+const { generateUniqueReference } = require('../utils/referenceGenerator');
+const { sendNewSubmissionNotification } = require('../services/emailService');
+
+// ==========================================
+// CONFIGURATION MULTER
+// ==========================================
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const nom = req.body.nom || 'Inconnu';
+    const prenom = req.body.prenom || 'Inconnu';
+    const today = new Date().toISOString().split('T')[0];
+    
+    const uploadPath = path.join('uploads', `${nom}_${prenom}`, today);
+    
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
+  },
+  filename: function (req, file, cb) {
+    const originalName = file.originalname;
+    const timestamp = Date.now();
+    const extension = path.extname(originalName);
+    const nameWithoutExt = path.basename(originalName, extension);
+    
+    const finalName = `${nameWithoutExt}_${timestamp}${extension}`;
+    cb(null, finalName);
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB max
+  }
+});
+
+// ==========================================
+// ✅ ROUTE PUBLIQUE - SOUMISSION VOYAGE
+// ==========================================
+
+/*router.post('/submit', upload.any(), async (req, res) => {
+  console.log('=== SUBMIT VOYAGE avec nouveau modèle Document ===');
+  console.log('Body:', req.body);
+  console.log('Files:', req.files);
+*/
+router.post('/submit', upload.any(), async (req, res) => {
+  console.log('=== SUBMIT VOYAGE ===');
+  console.log('📦 Body:', req.body);
+  console.log('📎 Files:', req.files);
+  console.log('📊 Nombre fichiers:', req.files ? req.files.length : 0);
+
+  if (req.files) {
+    req.files.forEach((file, index) => {
+      console.log(`  Fichier ${index + 1}:`, file.originalname, file.size, 'bytes');
+    });
+  }
+  try {
+    const { 
+      nom, prenom, email, telephone, profession, sexe,
+      pays, raison, autreRaison,
+      dateDebut, dateFin 
+    } = req.body;
+    
+    // ✅ Validation des champs requis
+    if (!nom || !prenom || !email || !telephone || !profession || !sexe || 
+        !pays || !raison || !dateDebut || !dateFin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tous les champs sont requis'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Au moins un fichier est requis'
+      });
+    }
+
+    // ✅ Génération de référence unique
+    const reference = await generateUniqueReference(Document, 'DOC');
+    
+    const today = new Date().toISOString().split('T')[0];
+
+    // ✅ Préparer les fichiers
+    const fichiers = req.files.map(file => ({
+      nom: file.filename,
+      nomOriginal: file.originalname,
+      chemin: file.path,
+      taille: file.size,
+      extension: path.extname(file.originalname),
+      dateUpload: new Date()
+    }));
+
+    // ✅ Créer le sous-dossier
+    const sousDossier = {
+      nom: today,
+      date: new Date(),
+      motif: raison === 'autres' ? autreRaison : raison,
+      fichiers
+    };
+
+    // ✅ NOUVEAU modèle Document
+    const nouveauDocument = new Document({
+      reference,
+      nom: nom.trim(),
+      prenom: prenom.trim(),
+      email: email.toLowerCase().trim(),
+      telephone: telephone.trim(),
+      profession: profession.trim(),
+      sexe,
+      typeDocument: 'voyage', // ✅ Nouveau champ
+      pays,
+      raison,
+      autreRaison: raison === 'autres' ? autreRaison : undefined,
+      dateDebut: new Date(dateDebut),
+      dateFin: new Date(dateFin),
+      sousDossiers: [sousDossier],
+      statut: 'en_attente'
+    });
+
+    await nouveauDocument.save();
+    
+    console.log('✅ Document VOYAGE créé:', reference);
+
+    // ✅ Notification email
+    const emailData = {
+      nom: nom.trim(),
+      prenom: prenom.trim(),
+      email: email.toLowerCase().trim(),
+      telephone: telephone.trim(),
+      motif: raison === 'autres' ? autreRaison : raison,
+      nombreFichiers: req.files.length,
+      dateDebut: new Date(dateDebut).toLocaleDateString('fr-FR'),
+      dateFin: new Date(dateFin).toLocaleDateString('fr-FR')
+    };
+    
+    sendNewSubmissionNotification(emailData)
+      .then(result => console.log('Email notification:', result.message))
+      .catch(err => console.error('Email error:', err));
+
+    res.status(201).json({
+      success: true,
+      message: 'Documents de voyage soumis avec succès',
+      reference,
+      document: {
+        _id: nouveauDocument._id,
+        reference: nouveauDocument.reference,
+        nom: nouveauDocument.nom,
+        prenom: nouveauDocument.prenom,
+        email: nouveauDocument.email,
+        statut: nouveauDocument.statut,
+        typeDocument: 'voyage'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur soumission voyage:', error);
+    
+    // Nettoyer les fichiers en cas d'erreur
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la soumission: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ✅ NOUVELLE ROUTE - SOUMISSION TRANSFERT
+// ==========================================
+
+router.post('/submit-transfert', upload.any(), async (req, res) => {
+  console.log('=== SUBMIT TRANSFERT ===');
+  console.log('Body:', req.body);
+  console.log('Files:', req.files);
+
+  try {
+    const { 
+      nom, prenom, email, telephone, profession, sexe,
+      typeTransfert,
+      dateDebut, dateFin 
+    } = req.body;
+    
+    // Validation
+    if (!nom || !prenom || !email || !telephone || !profession || !sexe || 
+        !typeTransfert || !dateDebut || !dateFin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tous les champs sont requis'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Au moins un fichier est requis'
+      });
+    }
+
+    // Génération de référence
+    const reference = await generateUniqueReference(Document, 'TRF');
+    
+    const today = new Date().toISOString().split('T')[0];
+
+    // Préparer les fichiers
+    const fichiers = req.files.map(file => ({
+      nom: file.filename,
+      nomOriginal: file.originalname,
+      chemin: file.path,
+      taille: file.size,
+      extension: path.extname(file.originalname),
+      dateUpload: new Date()
+    }));
+
+    // Créer le sous-dossier
+    const sousDossier = {
+      nom: today,
+      date: new Date(),
+      motif: typeTransfert,
+      fichiers
+    };
+
+    // NOUVEAU modèle Document (type transfert)
+    const nouveauDocument = new Document({
+      reference,
+      nom: nom.trim(),
+      prenom: prenom.trim(),
+      email: email.toLowerCase().trim(),
+      telephone: telephone.trim(),
+      profession: profession.trim(),
+      sexe,
+      typeDocument: 'transfert', // ✅ Type transfert
+      typeTransfert,
+      dateDebut: new Date(dateDebut),
+      dateFin: new Date(dateFin),
+      sousDossiers: [sousDossier],
+      statut: 'en_attente'
+    });
+
+    await nouveauDocument.save();
+    
+    console.log('✅ Document TRANSFERT créé:', reference);
+
+    res.status(201).json({
+      success: true,
+      message: 'Dossier de transfert soumis avec succès',
+      reference,
+      document: {
+        _id: nouveauDocument._id,
+        reference: nouveauDocument.reference,
+        nom: nouveauDocument.nom,
+        prenom: nouveauDocument.prenom,
+        email: nouveauDocument.email,
+        statut: nouveauDocument.statut,
+        typeDocument: 'transfert'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur soumission transfert:', error);
+    
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la soumission: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - CONSULTATION
+// ==========================================
+
+router.get('/admin/dossiers', auth, async (req, res) => {
+  try {
+    const { typeDocument, statut } = req.query;
+    
+    const filtres = {};
+    if (typeDocument) filtres.typeDocument = typeDocument;
+    if (statut) filtres.statut = statut;
+
+    const documents = await Document.find(filtres)
+      .sort({ dateCreation: -1 })
+      .lean();
+
+    const dossiersFormates = documents.map(doc => ({
+      _id: doc._id,
+      reference: doc.reference,
+      nom: `${doc.nom}_${doc.prenom}`,
+      email: doc.email,
+      telephone: doc.telephone,
+      profession: doc.profession, // ✅ Nouveau
+      sexe: doc.sexe, // ✅ Nouveau
+      typeDocument: doc.typeDocument, // ✅ Nouveau
+      pays: doc.pays,
+      raison: doc.raison,
+      typeTransfert: doc.typeTransfert,
+      dateDebut: doc.dateDebut,
+      dateFin: doc.dateFin,
+      statut: doc.statut,
+      motifRejet: doc.motifRejet,
+      dateCreation: doc.dateCreation,
+      sousDossiers: doc.sousDossiers
+    }));
+
+    res.json({
+      success: true,
+      dossiers: dossiersFormates
+    });
+
+  } catch (error) {
+    console.error('Erreur récupération dossiers:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + error.message
+    });
+  }
+});
+
+router.get('/admin/stats', auth, async (req, res) => {
+  try {
+    const totalDossiers = await Document.countDocuments();
+    const totalVoyages = await Document.countDocuments({ typeDocument: 'voyage' });
+    const totalTransferts = await Document.countDocuments({ typeDocument: 'transfert' });
+    
+    const enAttente = await Document.countDocuments({ statut: 'en_attente' });
+    const partiellementApure = await Document.countDocuments({ statut: 'partiellement_apuré' });
+    const apure = await Document.countDocuments({ statut: 'apuré' });
+    const archives = await Document.countDocuments({ statut: 'archivé' });
+    const rejetes = await Document.countDocuments({ statut: 'rejeté' });
+
+    res.json({
+      success: true,
+      stats: {
+        totalDossiers,
+        totalVoyages,
+        totalTransferts,
+        enAttente,
+        partiellementApure,
+        apure,
+        archives,
+        rejetes
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - MODIFICATION
+// ==========================================
+
+router.patch('/admin/statut/:reference', auth, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const { statut, motifRejet } = req.body;
+
+    const validStatuts = ['en_attente', 'partiellement_apuré', 'apuré', 'archivé', 'rejeté'];
+    if (!validStatuts.includes(statut)) {
+      return res.status(400).json({
+        success: false,
+        message: `Statut invalide. Statuts autorisés : ${validStatuts.join(', ')}`
+      });
+    }
+
+    const userRole = req.user.role;
+    const allowedRoles = ['admin_bank', 'superviseur', 'auditeur', 'agent_saisie', 'conformité', 'super_admin'];
+
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Vous n\'avez pas les permissions nécessaires'
+      });
+    }
+
+    if (userRole === 'agent_saisie' && statut === 'archivé') {
+      return res.status(403).json({
+        success: false,
+        message: 'Les agents de saisie ne peuvent pas archiver'
+      });
+    }
+
+    if (statut === 'rejeté' && userRole !== 'conformité') {
+      return res.status(403).json({
+        success: false,
+        message: 'Seul le service conformité peut rejeter'
+      });
+    }
+
+    if (statut === 'rejeté' && (!motifRejet || motifRejet.trim() === '')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le motif de rejet est obligatoire'
+      });
+    }
+
+    const updateData = {
+      statut: statut,
+      dateModification: new Date()
+    };
+
+    if (motifRejet) {
+      updateData.motifRejet = motifRejet;
+    }
+
+    const document = await Document.findOneAndUpdate(
+      { reference },
+      updateData,
+      { new: true }
+    );
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document non trouvé'
+      });
+    }
+
+    console.log(`✅ Statut mis à jour pour ${reference}: "${statut}" par ${userRole}`);
+
+    res.json({
+      success: true,
+      message: 'Statut mis à jour avec succès',
+      document: {
+        reference: document.reference,
+        statut: document.statut,
+        motifRejet: document.motifRejet || null
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur changement statut:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - SUPPRESSION
+// ==========================================
+
+router.delete('/admin/dossier/:reference', auth, async (req, res) => {
+  try {
+    const { reference } = req.params;
+
+    const document = await Document.findOne({ reference });
+    
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document non trouvé'
+      });
+    }
+
+    // Supprimer les fichiers physiques
+    const dossierPath = path.join(__dirname, '../uploads', `${document.nom}_${document.prenom}`);
+    if (fs.existsSync(dossierPath)) {
+      fs.rmSync(dossierPath, { recursive: true, force: true });
+      console.log(`Dossier physique supprimé: ${dossierPath}`);
+    }
+
+    await Document.findOneAndDelete({ reference });
+    
+    console.log(`Document supprimé: ${reference}`);
+
+    res.json({
+      success: true,
+      message: 'Document supprimé avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur suppression:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - TÉLÉCHARGEMENT
+// ==========================================
+
+router.get('/admin/download/:reference/:sousDossierId/:fileId', auth, async (req, res) => {
+  try {
+    const { reference, sousDossierId, fileId } = req.params;
+
+    const document = await Document.findOne({ reference });
+    
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document non trouvé'
+      });
+    }
+
+    const sousDossier = document.sousDossiers.id(sousDossierId);
+    const fichier = sousDossier?.fichiers.id(fileId);
+    
+    if (!fichier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Fichier non trouvé'
+      });
+    }
+
+    if (!fs.existsSync(fichier.chemin)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Fichier physique non trouvé'
+      });
+    }
+
+    res.download(fichier.chemin, fichier.nomOriginal);
+
+  } catch (error) {
+    console.error('Erreur téléchargement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + error.message
+    });
+  }
+});
+
+module.exports = router;

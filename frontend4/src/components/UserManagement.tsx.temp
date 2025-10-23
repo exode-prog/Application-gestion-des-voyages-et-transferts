@@ -1,0 +1,2 @@
+// Ajoutez ceci au début du fichier si ce n'est pas déjà fait
+const API_URL = process.env.REACT_APP_API_URL || '';

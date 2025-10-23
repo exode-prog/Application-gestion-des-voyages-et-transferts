@@ -1,0 +1,648 @@
+const express = require('express');
+const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const Dossier = require('../models/Dossier');
+const { auth } = require('../middleware/auth');
+const { sendNewSubmissionNotification } = require('../services/emailService'); //pour les notifications par mail
+
+// ==========================================
+// CONFIGURATION MULTER
+// ==========================================
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const nom = req.body.nom || 'Inconnu';
+    const prenom = req.body.prenom || 'Inconnu';
+    const today = new Date().toISOString().split('T')[0];
+    
+    const uploadPath = path.join('uploads', `${nom}_${prenom}`, today);
+    
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
+  },
+  filename: function (req, file, cb) {
+    const originalName = file.originalname;
+    const timestamp = Date.now();
+    const extension = path.extname(originalName);
+    const nameWithoutExt = path.basename(originalName, extension);
+    
+    const finalName = `${nameWithoutExt}_${timestamp}${extension}`;
+    cb(null, finalName);
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB max
+  }
+});
+
+// ==========================================
+// ROUTES PUBLIQUES - SOUMISSION
+// ==========================================
+
+router.post('/submit', upload.any(), async (req, res) => {
+  console.log('=== SUBMIT avec MongoDB ===');
+  console.log('Body:', req.body);
+  console.log('Files:', req.files);
+
+  try {
+    const { nom, prenom, email, telephone, motif, dateDebut, dateFin } = req.body;
+    
+    // Validation
+    if (!nom || !prenom || !email || !telephone || !motif || !dateDebut || !dateFin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tous les champs sont requis'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Au moins un fichier est requis'
+      });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const dossierNom = `${nom}_${prenom}`;
+
+    // Préparer les données des fichiers
+    const fichiers = req.files.map(file => ({
+      nom: file.filename,
+      nomOriginal: file.originalname,
+      chemin: `uploads/${dossierNom}/${today}/`,
+      taille: file.size,
+      extension: path.extname(file.originalname),
+      dateUpload: new Date()
+    }));
+
+    // Nouveau sous-dossier
+    const nouveauSousDossier = {
+      nom: today,
+      motif,
+      dateDebut: new Date(dateDebut),
+      dateFin: new Date(dateFin),
+      fichiers,
+      dateCreation: new Date()
+    };
+
+    // Chercher si le dossier principal existe
+    let dossier = await Dossier.findOne({ email: email.toLowerCase() });
+
+    if (dossier) {
+      console.log('Dossier existant trouvé, ajout du sous-dossier');
+      
+      const sousDossierExistant = dossier.sousDossiers.find(sd => sd.nom === today);
+      
+      if (sousDossierExistant) {
+        sousDossierExistant.fichiers.push(...fichiers);
+        sousDossierExistant.motif = motif;
+      } else {
+        dossier.sousDossiers.push(nouveauSousDossier);
+      }
+      
+      await dossier.save();
+      
+    } else {
+      console.log('Création d\'un nouveau dossier principal');
+      
+      dossier = new Dossier({
+        nom: nom.trim(),
+        prenom: prenom.trim(),
+        email: email.toLowerCase().trim(),
+        telephone: telephone.trim(),
+        statut: 'en_attente',
+        sousDossiers: [nouveauSousDossier],
+        dateCreation: new Date()
+      });
+      
+      await dossier.save();
+    }
+
+    console.log('Dossier sauvegardé avec succès dans MongoDB');
+
+//pour la notification par mail
+console.log('Dossier sauvegardé avec succès dans MongoDB');
+
+    // ====== AJOUT : NOTIFICATION EMAIL ======
+    // Envoyer notification aux admins bank
+    const emailData = {
+      nom: nom.trim(),
+      prenom: prenom.trim(),
+      email: email.toLowerCase().trim(),
+      telephone: telephone.trim(),
+      motif: motif,
+      nombreFichiers: req.files.length,
+      dateDebut: new Date(dateDebut).toLocaleDateString('fr-FR'),
+      dateFin: new Date(dateFin).toLocaleDateString('fr-FR')
+    };
+    
+    // Envoi asynchrone (ne bloque pas la réponse)
+    sendNewSubmissionNotification(emailData)
+      .then(result => {
+        if (result.success) {
+          console.log('Notification email:', result.message);
+        } else {
+          console.log(' Notification non envoyée:', result.message);
+        }
+      })
+      .catch(err => {
+        console.error(' Erreur notification email:', err);
+      });
+      
+
+
+
+    res.status(201).json({
+      success: true,
+      message: 'Documents soumis et sauvegardés avec succès',
+      dossier: {
+        _id: dossier._id,
+        nom: dossier.nom,
+        prenom: dossier.prenom,
+        email: dossier.email,
+        statut: dossier.statut,
+        totalSousDossiers: dossier.sousDossiers.length,
+        totalFichiers: dossier.sousDossiers.reduce((total, sd) => total + sd.fichiers.length, 0)
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la soumission:', error);
+    
+    // En cas d'erreur, supprimer les fichiers uploadés
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la soumission: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - CONSULTATION
+// ==========================================
+
+router.get('/admin/dossiers', auth, async (req, res) => {
+  try {
+    const dossiers = await Dossier.find()
+      .sort({ derniereMiseAJour: -1 })
+      .lean();
+
+    const dossiersFormates = dossiers.map(dossier => ({
+      _id: dossier._id,
+      nom: `${dossier.nom}_${dossier.prenom}`,
+      email: dossier.email,
+      telephone: dossier.telephone,
+      motif: dossier.sousDossiers[0]?.motif || 'Aucun motif spécifié',
+      statut: dossier.statut,
+      dateCreation: dossier.dateCreation,
+      derniereMiseAJour: dossier.derniereMiseAJour,
+      sousDossiers: dossier.sousDossiers.map(sd => ({
+        _id: sd._id,
+	nom: sd.nom,
+        date: sd.dateCreation,
+        motif: sd.motif,
+        fichiers: sd.fichiers.map(f => ({
+          _id: f._id,
+          nom: f.nom,
+          nomOriginal: f.nomOriginal,
+          taille: f.taille,
+          extension: f.extension,
+          chemin: f.chemin
+        }))
+      }))
+    }));
+
+    res.json({
+      success: true,
+      dossiers: dossiersFormates
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la récupération des dossiers:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des dossiers: ' + error.message
+    });
+  }
+});
+
+router.get('/admin/stats', auth, async (req, res) => {
+  try {
+    const stats = await Dossier.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalDossiers: { $sum: 1 },
+          enAttente: {
+            $sum: { $cond: [{ $eq: ['$statut', 'en_attente'] }, 1, 0] }
+          },
+          traites: {
+            $sum: { $cond: [{ $eq: ['$statut', 'traite'] }, 1, 0] }
+          },
+          archives: {
+            $sum: { $cond: [{ $eq: ['$statut', 'archive'] }, 1, 0] }
+          },
+          totalSousDossiers: { $sum: { $size: '$sousDossiers' } },
+          totalFichiers: {
+            $sum: {
+              $sum: {
+                $map: {
+                  input: '$sousDossiers',
+                  as: 'sd',
+                  in: { $size: '$$sd.fichiers' }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        totalDossiers: 0,
+        enAttente: 0,
+        traites: 0,
+        archives: 0,
+        totalSousDossiers: 0,
+        totalFichiers: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors du calcul des statistiques:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du calcul des statistiques: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - MODIFICATION
+// ==========================================
+
+/*router.patch('/admin/statut/:email', auth, async (req, res) => {
+  try {
+    const { email } = req.params;
+    const { statut } = req.body;
+
+    if (!['en_attente', 'partiellement_apuré', 'apuré', 'archivé', 'rejeté'].includes(statut)) {   
+        success: false,
+        message: 'Statut invalide'
+      });
+    }
+
+    const dossier = await Dossier.findOneAndUpdate(
+      { email: email.toLowerCase() },
+      { 
+        statut: statut,
+        derniereMiseAJour: new Date()
+      },
+      { new: true }
+    );
+
+    if (!dossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dossier non trouvé'
+      });
+    }
+
+    console.log(`Statut mis à jour en MongoDB pour ${email}: ${statut}`);
+
+    res.json({
+      success: true,
+      message: 'Statut mis à jour avec succès',
+      dossier: {
+        email: dossier.email,
+        statut: dossier.statut
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors du changement de statut:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du changement de statut: ' + error.message
+    });
+  }
+});
+*/
+
+
+
+
+// ==========================================
+// ROUTES ADMIN - MODIFICATION DE STATUT
+// ==========================================
+router.patch('/admin/statut/:email', auth, async (req, res) => {
+  try {
+    const { email } = req.params;
+    const { statut, motifRejet } = req.body;
+
+    // ✅ Validation : Nouveaux statuts
+    const validStatuts = ['en_attente', 'partiellement_apuré', 'apuré', 'archivé', 'rejeté'];
+    if (!validStatuts.includes(statut)) {
+      console.error(`❌ Statut invalide reçu: "${statut}"`);
+      return res.status(400).json({
+        success: false,
+        message: `Statut invalide. Statuts autorisés : ${validStatuts.join(', ')}`
+      });
+    }
+
+    // ✅ Permissions : Vérifier le rôle
+    const userRole = req.user.role;
+    const allowedRoles = ['admin_bank', 'superviseur', 'auditeur', 'agent_saisie', 'conformité'];
+
+    if (!allowedRoles.includes(userRole)) {
+      console.error(`❌ Rôle non autorisé: ${userRole}`);
+      return res.status(403).json({
+        success: false,
+        message: 'Vous n\'avez pas les permissions nécessaires'
+      });
+    }
+
+    // ✅ Restriction : agent_saisie ne peut pas archiver
+    if (userRole === 'agent_saisie' && statut === 'archivé') {
+      return res.status(403).json({
+        success: false,
+        message: 'Les agents de saisie ne peuvent pas archiver les dossiers'
+      });
+    }
+
+    // ✅ Restriction : Seul conformité peut rejeter
+    if (statut === 'rejeté' && userRole !== 'conformité') {
+      return res.status(403).json({
+        success: false,
+        message: 'Seul le service conformité peut rejeter un dossier'
+      });
+    }
+
+    // ✅ Validation : motifRejet obligatoire si rejeté
+    if (statut === 'rejeté' && (!motifRejet || motifRejet.trim() === '')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le motif de rejet est obligatoire'
+      });
+    }
+
+    // Préparer la mise à jour
+    const updateData = {
+      statut: statut,
+      derniereMiseAJour: new Date()
+    };
+
+    if (motifRejet) {
+      updateData.motifRejet = motifRejet;
+    }
+
+    // Mettre à jour le dossier
+    const dossier = await Dossier.findOneAndUpdate(
+      { email: email.toLowerCase() },
+      updateData,
+      { new: true }
+    );
+
+    if (!dossier) {
+      console.error(`❌ Dossier non trouvé pour email: ${email}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Dossier non trouvé'
+      });
+    }
+
+    console.log(`✅ Statut mis à jour pour ${email}: "${statut}" par ${userRole}`);
+
+    res.json({
+      success: true,
+      message: 'Statut mis à jour avec succès',
+      dossier: {
+        email: dossier.email,
+        statut: dossier.statut,
+        motifRejet: dossier.motifRejet || null
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur serveur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - SUPPRESSION
+// ==========================================
+
+router.delete('/admin/dossier/:email', auth, async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const dossier = await Dossier.findOne({ email: email.toLowerCase() });
+    
+    if (!dossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dossier non trouvé'
+      });
+    }
+
+    // Supprimer les fichiers physiques
+    const dossierPath = path.join(__dirname, '../uploads', `${dossier.nom}_${dossier.prenom}`);
+    if (fs.existsSync(dossierPath)) {
+      fs.rmSync(dossierPath, { recursive: true, force: true });
+      console.log(`Dossier physique supprimé: ${dossierPath}`);
+    }
+
+    // Supprimer de MongoDB
+    await Dossier.findOneAndDelete({ email: email.toLowerCase() });
+    
+    console.log(`Dossier supprimé de MongoDB: ${email}`);
+
+    res.json({
+      success: true,
+      message: 'Dossier supprimé avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la suppression du dossier:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression: ' + error.message
+    });
+  }
+});
+
+router.delete('/admin/sousdossier/:email/:sousDossierId', auth, async (req, res) => {
+  try {
+    const { email, sousDossierId } = req.params;
+
+    const dossier = await Dossier.findOne({ email: email.toLowerCase() });
+    
+    if (!dossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dossier non trouvé'
+      });
+    }
+
+    const sousDossier = dossier.sousDossiers.id(sousDossierId);
+    
+    if (!sousDossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Sous-dossier non trouvé'
+      });
+    }
+
+    // Supprimer les fichiers physiques du sous-dossier
+    const sousDossierPath = path.join(__dirname, '../uploads', `${dossier.nom}_${dossier.prenom}`, sousDossier.nom);
+    if (fs.existsSync(sousDossierPath)) {
+      fs.rmSync(sousDossierPath, { recursive: true, force: true });
+      console.log(`Sous-dossier physique supprimé: ${sousDossierPath}`);
+    }
+
+    // Supprimer le sous-dossier de MongoDB
+    dossier.sousDossiers.pull(sousDossierId);
+    await dossier.save();
+
+    console.log(`Sous-dossier supprimé de MongoDB: ${sousDossierId}`);
+
+    res.json({
+      success: true,
+      message: 'Sous-dossier supprimé avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la suppression du sous-dossier:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression: ' + error.message
+    });
+  }
+});
+
+router.delete('/admin/file/:email/:sousDossierId/:fileId', auth, async (req, res) => {
+  try {
+    const { email, sousDossierId, fileId } = req.params;
+
+    const dossier = await Dossier.findOne({ email: email.toLowerCase() });
+    
+    if (!dossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dossier non trouvé'
+      });
+    }
+
+    const sousDossier = dossier.sousDossiers.id(sousDossierId);
+    
+    if (!sousDossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Sous-dossier non trouvé'
+      });
+    }
+
+    const fichier = sousDossier.fichiers.id(fileId);
+    
+    if (!fichier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Fichier non trouvé'
+      });
+    }
+
+    // Supprimer le fichier physique
+    const fichierPath = path.join(__dirname, '../', fichier.chemin, fichier.nom);
+    if (fs.existsSync(fichierPath)) {
+      fs.unlinkSync(fichierPath);
+      console.log(`Fichier physique supprimé: ${fichierPath}`);
+    }
+
+    // Supprimer de MongoDB
+    sousDossier.fichiers.pull(fileId);
+    await dossier.save();
+
+    console.log(`Fichier supprimé de MongoDB: ${fileId}`);
+
+    res.json({
+      success: true,
+      message: 'Fichier supprimé avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la suppression du fichier:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression: ' + error.message
+    });
+  }
+});
+
+// ==========================================
+// ROUTES ADMIN - TÉLÉCHARGEMENT
+// ==========================================
+
+router.get('/admin/download/:email/:sousDossierId/:fileId', auth, async (req, res) => {
+  try {
+    const { email, sousDossierId, fileId } = req.params;
+
+    const dossier = await Dossier.findOne({ email: email.toLowerCase() });
+    
+    if (!dossier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dossier non trouvé'
+      });
+    }
+
+    const sousDossier = dossier.sousDossiers.id(sousDossierId);
+    const fichier = sousDossier?.fichiers.id(fileId);
+    
+    if (!fichier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Fichier non trouvé'
+      });
+    }
+
+    const fichierPath = path.join(__dirname, '../', fichier.chemin, fichier.nom);
+    
+    if (!fs.existsSync(fichierPath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Fichier physique non trouvé'
+      });
+    }
+
+    // Télécharger avec le nom original
+    res.download(fichierPath, fichier.nomOriginal);
+
+  } catch (error) {
+    console.error('Erreur lors du téléchargement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du téléchargement: ' + error.message
+    });
+  }
+});
+
+module.exports = router;

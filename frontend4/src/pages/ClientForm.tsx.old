@@ -1,0 +1,419 @@
+import React, { useState, useRef } from 'react';
+import { documentService } from '../services/api';
+import LoadingSpinner from '../components/LoadingSpinner';
+import { useToast } from '../components/Toast';
+
+interface FormData {
+  nom: string;
+  prenom: string;
+  email: string;
+  telephone: string;
+  motif: string;
+  dateDebut: string;
+  dateFin: string;
+}
+
+interface FormErrors {
+  [key: string]: string;
+}
+
+const ClientForm: React.FC = () => {
+  const [formData, setFormData] = useState<FormData>({
+    nom: '',
+    prenom: '',
+    email: '',
+    telephone: '',
+    motif: '',
+    dateDebut: '',
+    dateFin: '',
+  });
+
+  const [files, setFiles] = useState<File[]>([]);
+  const [errors, setErrors] = useState<FormErrors>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const toast = useToast();
+
+  const validateForm = (): boolean => {
+    const newErrors: FormErrors = {};
+    if (!formData.nom.trim()) newErrors.nom = 'Le nom est requis';
+    if (!formData.prenom.trim()) newErrors.prenom = 'Le prénom est requis';
+    if (!formData.email.trim()) newErrors.email = 'L\'email est requis';
+    if (!formData.telephone.trim()) newErrors.telephone = 'Le téléphone est requis';
+    if (!formData.motif.trim()) newErrors.motif = 'Le motif est requis';
+    if (!formData.dateDebut) newErrors.dateDebut = 'La date de début est requise';
+    if (!formData.dateFin) newErrors.dateFin = 'La date de fin est requise';
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (formData.email && !emailRegex.test(formData.email)) {
+      newErrors.email = 'Format d\'email invalide';
+    }
+
+    if (formData.dateDebut && formData.dateFin) {
+      const debut = new Date(formData.dateDebut);
+      const fin = new Date(formData.dateFin);
+      if (debut > fin) {
+        newErrors.dateFin = 'La date de fin doit être postérieure à la date de début';
+      }
+    }
+
+    if (files.length === 0) newErrors.files = 'Au moins un fichier est requis';
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    if (errors[name]) setErrors(prev => ({ ...prev, [name]: '' }));
+  };
+
+  const handleFileSelect = (selectedFiles: FileList | null) => {
+    if (!selectedFiles) return;
+    const newFiles = Array.from(selectedFiles);
+    const maxSize = 50 * 1024 * 1024;
+    const validFiles = newFiles.filter(file => {
+      if (file.size > maxSize) {
+        toast.warning(`Le fichier ${file.name} est trop volumineux (max 50MB)`);
+        return false;
+      }
+      return true;
+    });
+  
+    setFiles(prev => [...prev, ...validFiles]);
+    if (errors.files) setErrors(prev => ({ ...prev, files: '' }));
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    handleFileSelect(e.dataTransfer.files);
+  };
+
+  const handleDownloadTemplate = async () => {
+    setIsDownloading(true);
+    try {
+      // Remplacez cette URL par votre endpoint API pour télécharger le document
+      const response = await fetch('/api/documents/template', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/pdf',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Erreur lors du téléchargement');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'documents-a-fournir.pdf'; // Nom du fichier téléchargé
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      toast.success('Document téléchargé avec succès');
+    } catch (error: any) {
+      toast.error('Erreur lors du téléchargement du document');
+      console.error('Download error:', error);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateForm()) {
+      toast.error('Veuillez corriger les erreurs du formulaire');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const submitData = new FormData();
+      Object.entries(formData).forEach(([key, value]) => {
+        submitData.append(key, value);
+      });
+      files.forEach(file => {
+        submitData.append('fichiers', file);
+      });
+      await documentService.submit(submitData);
+      setShowSuccessModal(true);
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Erreur lors de l\'envoi');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({ nom: '', prenom: '', email: '', telephone: '', motif: '', dateDebut: '', dateFin: '' });
+    setFiles([]);
+    setErrors({});
+    setShowSuccessModal(false);
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-100 relative overflow-hidden">
+      <toast.ToastContainer />
+      
+      <div className="absolute top-0 left-0 w-96 h-96 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
+      <div className="absolute top-0 right-0 w-96 h-96 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
+      <div className="absolute bottom-0 left-1/2 w-96 h-96 bg-blue-100 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
+
+      <div className="relative bg-white/80 backdrop-blur-lg shadow-lg border-b border-blue-100">
+        <div className="max-w-5xl mx-auto px-6 py-10">
+          <div className="flex items-center justify-center space-x-4">
+            <div className="w-14 h-14 bg-gradient-to-br from-blue-600 to-blue-400 rounded-2xl flex items-center justify-center shadow-lg transform hover:scale-110 hover:rotate-3 transition-all duration-300">
+              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-4xl font-extrabold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">DataCollectApp</h1>
+              <p className="text-blue-600 font-medium mt-1">Soumission de documents en ligne</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="relative max-w-5xl mx-auto px-6 py-12">
+        <div className="bg-white/90 backdrop-blur-sm rounded-3xl shadow-2xl border border-blue-100 overflow-hidden transform hover:shadow-blue-200/50 transition-all duration-500">
+          <div className="p-10">
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center space-x-3">
+                <div className="h-1 w-12 bg-gradient-to-r from-blue-600 to-blue-400 rounded-full"></div>
+                <h2 className="text-3xl font-bold text-gray-800">Soumettre vos documents</h2>
+              </div>
+              
+              <button
+                onClick={handleDownloadTemplate}
+                disabled={isDownloading}
+                className="flex items-center space-x-2 px-6 py-3 bg-gradient-to-r from-green-600 to-green-500 text-white font-semibold rounded-xl hover:from-green-700 hover:to-green-600 focus:outline-none focus:ring-4 focus:ring-green-300 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 hover:shadow-lg hover:shadow-green-500/50 disabled:transform-none disabled:shadow-none"
+              >
+                {isDownloading ? (
+                  <>
+                    <LoadingSpinner size="sm" text="" />
+                    <span>Téléchargement...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <span>Documents à fournir</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {['nom', 'prenom'].map((field) => (
+                  <div key={field} className="group">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      {field === 'nom' ? 'Nom' : 'Prénom'} <span className="text-blue-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      name={field}
+                      value={formData[field as keyof FormData]}
+                      onChange={handleInputChange}
+                      className={`w-full px-5 py-3.5 rounded-xl border-2 ${errors[field] ? 'border-red-300 focus:border-red-500' : 'border-blue-100 focus:border-blue-500'} focus:outline-none transition-all duration-300 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100/50 bg-white/50`}
+                      placeholder={`Votre ${field}`}
+                    />
+                    {errors[field] && (
+                      <p className="text-red-500 text-sm mt-2 flex items-center">
+                        <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                        {errors[field]}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="group">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Email <span className="text-blue-600">*</span></label>
+                  <input type="email" name="email" value={formData.email} onChange={handleInputChange} className={`w-full px-5 py-3.5 rounded-xl border-2 ${errors.email ? 'border-red-300 focus:border-red-500' : 'border-blue-100 focus:border-blue-500'} focus:outline-none transition-all duration-300 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100/50 bg-white/50`} placeholder="votre.email@exemple.com" />
+                  {errors.email && <p className="text-red-500 text-sm mt-2 flex items-center"><svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>{errors.email}</p>}
+                </div>
+                <div className="group">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Téléphone <span className="text-blue-600">*</span></label>
+                  <input type="tel" name="telephone" value={formData.telephone} onChange={handleInputChange} className={`w-full px-5 py-3.5 rounded-xl border-2 ${errors.telephone ? 'border-red-300 focus:border-red-500' : 'border-blue-100 focus:border-blue-500'} focus:outline-none transition-all duration-300 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100/50 bg-white/50`} placeholder="+236 XX XX XX XX" />
+                  {errors.telephone && <p className="text-red-500 text-sm mt-2 flex items-center"><svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>{errors.telephone}</p>}
+                </div>
+              </div>
+
+              <div className="group">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Motif de la demande <span className="text-blue-600">*</span></label>
+                <textarea name="motif" value={formData.motif} onChange={handleInputChange} rows={1} className={`w-full px-5 py-3.5 rounded-xl border-2 ${errors.motif ? 'border-red-300 focus:border-red-500' : 'border-blue-100 focus:border-blue-500'} focus:outline-none transition-all duration-300 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100/50 bg-white/50 resize-none`} placeholder="Décrivez brièvement l'objet de votre demande..." />
+                {errors.motif && <p className="text-red-500 text-sm mt-2 flex items-center"><svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>{errors.motif}</p>}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {['dateDebut', 'dateFin'].map((field) => (
+                  <div key={field} className="group">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">{field === 'dateDebut' ? 'Date de début' : 'Date de fin'} <span className="text-blue-600">*</span></label>
+                    <input type="date" name={field} value={formData[field as keyof FormData]} onChange={handleInputChange} className={`w-full px-5 py-3.5 rounded-xl border-2 ${errors[field] ? 'border-red-300 focus:border-red-500' : 'border-blue-100 focus:border-blue-500'} focus:outline-none transition-all duration-300 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100/50 bg-white/50`} />
+                    {errors[field] && <p className="text-red-500 text-sm mt-2 flex items-center"><svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>{errors[field]}</p>}
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-3">Documents à joindre <span className="text-blue-600">*</span></label>
+                <div className={`relative rounded-2xl border-3 border-dashed transition-all duration-300 cursor-pointer group ${dragOver ? 'border-blue-500 bg-blue-50 scale-105 shadow-lg shadow-blue-200/50' : errors.files ? 'border-red-300 hover:border-red-400 bg-red-50/30' : 'border-blue-200 hover:border-blue-400 bg-gradient-to-br from-blue-50/50 to-white hover:shadow-lg hover:shadow-blue-200/50'} p-5`} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={() => fileInputRef.current?.click()}>
+                  <div className="text-center">
+                    <div className="mx-auto h-12 w-12 rounded-full bg-gradient-to-br from-blue-100 to-blue-200 flex items-center justify-center mb-3 group-hover:scale-110 group-hover:rotate-6 transition-all duration-300">
+                      <svg className="h-6 w-6 text-blue-600" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </div>
+                    <p className="text-gray-700 font-medium mb-2 text-lg">Glissez-déposez vos fichiers ici ou <span className="text-blue-600 font-bold group-hover:underline">cliquez pour parcourir</span></p>
+                    <p className="text-sm text-gray-500">Tous types de fichiers acceptés • Max 50MB par fichier</p>
+                  </div>
+                </div>
+                <input ref={fileInputRef} type="file" multiple onChange={(e) => handleFileSelect(e.target.files)} className="hidden" />
+                {errors.files && <p className="text-red-500 text-sm mt-2 flex items-center"><svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>{errors.files}</p>}
+
+                {files.length > 0 && (
+                  <div className="mt-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-semibold text-gray-800 text-lg">Fichiers sélectionnés</h4>
+                      <span className="px-4 py-1.5 bg-blue-100 text-blue-700 rounded-full text-sm font-bold">{files.length} {files.length > 1 ? 'fichiers' : 'fichier'}</span>
+                    </div>
+                    <div className="space-y-3">
+                      {files.map((file, index) => (
+                        <div key={index} className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-white rounded-xl border-2 border-blue-100 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100/50 transition-all duration-300 group">
+                          <div className="flex items-center space-x-4">
+                            <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-400 rounded-xl flex items-center justify-center shadow-md group-hover:scale-110 transition-transform duration-300">
+                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-gray-900">{file.name}</p>
+                              <p className="text-xs text-gray-500 font-medium">{formatFileSize(file.size)}</p>
+                            </div>
+                          </div>
+                          <button type="button" onClick={() => removeFile(index)} className="flex-shrink-0 w-10 h-10 rounded-full bg-red-50 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition-all duration-300 hover:scale-110 hover:rotate-12">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-center pt-8">
+                <button type="submit" disabled={isSubmitting} className="flex-1 py-4 px-8 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-bold text-lg rounded-xl hover:from-blue-700 hover:to-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 hover:shadow-xl hover:shadow-blue-500/50 disabled:transform-none disabled:shadow-none">
+                  {isSubmitting ? (
+                    <div className="flex items-center justify-center space-x-3">
+                      <LoadingSpinner size="sm" text="" />
+                      <span>Envoi en cours...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center space-x-2">
+                      <span>Envoyer les documents</span>
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                      </svg>
+                    </div>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {showSuccessModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="relative bg-white rounded-3xl shadow-2xl max-w-md w-full transform animate-scaleIn">
+            <div className="absolute inset-0 overflow-hidden rounded-3xl">
+              <div className="absolute top-0 left-1/4 w-2 h-2 bg-blue-400 rounded-full animate-confetti"></div>
+              <div className="absolute top-0 right-1/4 w-2 h-2 bg-blue-500 rounded-full animate-confetti animation-delay-200"></div>
+              <div className="absolute top-0 left-1/2 w-2 h-2 bg-blue-300 rounded-full animate-confetti animation-delay-400"></div>
+            </div>
+            <div className="relative p-10 text-center">
+              <div className="mx-auto flex items-center justify-center h-24 w-24 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 mb-6 shadow-lg shadow-blue-500/50 animate-bounce-slow">
+                <svg className="h-12 w-12 text-white animate-checkmark" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h3 className="text-3xl font-extrabold text-gray-900 mb-3">Envoi réussi !</h3>
+              <p className="text-gray-600 mb-8 text-lg leading-relaxed">
+                Vos documents ont été transmis avec succès à notre équipe.<br />
+               
+              </p>
+              <button onClick={resetForm} className="w-full py-4 px-8 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-bold text-lg rounded-xl hover:from-blue-700 hover:to-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all duration-300 transform hover:scale-105 hover:shadow-xl hover:shadow-blue-500/50">
+                <div className="flex items-center justify-center space-x-2">
+                  <span>Ok</span>
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                  </svg>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes blob { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(30px, -50px) scale(1.1); } 66% { transform: translate(-20px, 20px) scale(0.9); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes scaleIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        @keyframes checkmark { 0% { stroke-dasharray: 0 100; } 100% { stroke-dasharray: 100 100; } }
+        @keyframes bounce-slow { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+        @keyframes confetti { 0% { transform: translateY(0) rotate(0deg); opacity: 1; } 100% { transform: translateY(400px) rotate(360deg); opacity: 0; } }
+        .animate-blob { animation: blob 7s infinite; }
+        .animation-delay-2000 { animation-delay: 2s; }
+        .animation-delay-4000 { animation-delay: 4s; }
+        .animation-delay-200 { animation-delay: 200ms; }
+        .animation-delay-400 { animation-delay: 400ms; }
+        .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
+        .animate-scaleIn { animation: scaleIn 0.4s ease-out; }
+        .animate-checkmark { animation: checkmark 0.6s ease-in-out 0.3s forwards; stroke-dasharray: 0 100; }
+        .animate-bounce-slow { animation: bounce-slow 2s ease-in-out infinite; }
+        .animate-confetti { animation: confetti 3s ease-out infinite; }
+        .border-3 { border-width: 3px; }
+      `}</style>
+    </div>
+  );
+};
+
+export default ClientForm;

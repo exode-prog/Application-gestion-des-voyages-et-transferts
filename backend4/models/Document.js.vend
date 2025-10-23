@@ -1,0 +1,145 @@
+const mongoose = require('mongoose');
+
+const documentSchema = new mongoose.Schema({
+  // ✅ NOUVEAU : Référence unique
+  reference: {
+    type: String,
+    required: true,
+    unique: true,
+    index: true
+  },
+  
+  // Informations personnelles
+  nom: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  prenom: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  email: {
+    type: String,
+    required: true,
+    lowercase: true,
+    trim: true,
+    index: true
+  },
+  telephone: {
+    type: String,
+    trim: true
+  },
+  
+  // ✅ NOUVEAU : Informations supplémentaires
+  profession: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  sexe: {
+    type: String,
+    enum: ['H', 'F'],
+    required: true
+  },
+  
+  // ✅ NOUVEAU : Type de document
+  typeDocument: {
+    type: String,
+    enum: ['voyage', 'transfert'],
+    required: true
+  },
+  
+  // ✅ Champs spécifiques VOYAGE
+  pays: {
+    type: String,
+    trim: true
+  },
+  raison: {
+    type: String,
+    trim: true
+  },
+  autreRaison: {
+    type: String,
+    trim: true
+  },
+  
+  // ✅ Champs spécifiques TRANSFERT
+  typeTransfert: {
+    type: String,
+    trim: true
+  },
+  
+  // ✅ NOUVEAU : Dates
+  dateDebut: {
+    type: Date,
+    required: true
+  },
+  dateFin: {
+    type: Date,
+    required: true
+  },
+  
+  // Ancien champ motif (maintenu pour compatibilité)
+  motif: {
+    type: String,
+    trim: true
+  },
+  
+  // Sous-dossiers
+  sousDossiers: [{
+    nom: String,
+    date: Date,
+    motif: String,
+    fichiers: [{
+      nom: String,
+      nomOriginal: String,
+      taille: Number,
+      extension: String,
+      chemin: String,
+      dateUpload: {
+        type: Date,
+        default: Date.now
+      }
+    }]
+  }],
+  
+  // Statut
+  statut: {
+    type: String,
+    enum: ['en_attente', 'partiellement_apuré', 'apuré', 'archivé', 'rejeté'],
+    default: 'en_attente'
+  },
+  
+  motifRejet: {
+    type: String,
+    trim: true
+  },
+  
+  dateCreation: {
+    type: Date,
+    default: Date.now,
+    index: true
+  },
+  
+  dateModification: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: true
+});
+
+// ✅ Index composé pour recherche optimisée
+documentSchema.index({ reference: 1, statut: 1 });
+documentSchema.index({ email: 1, dateCreation: -1 });
+documentSchema.index({ typeDocument: 1, statut: 1 });
+
+// Middleware pour mettre à jour dateModification
+documentSchema.pre('save', function(next) {
+  this.dateModification = new Date();
+  next();
+});
+
+module.exports = mongoose.model('Document', documentSchema);

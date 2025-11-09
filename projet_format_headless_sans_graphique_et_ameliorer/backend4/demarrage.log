@@ -1,7 +1,0 @@
-=== DEMARRAGE SERVEUR EN ARRIERE-PLAN ===
-Aucun processus server.js en cours
-{ ok: 1 }
-MongoDB fonctionne
-Démarrage du serveur Node.js...
-Serveur demarre avec PID: 3421516
-URL: http://172.237.112.125:5000

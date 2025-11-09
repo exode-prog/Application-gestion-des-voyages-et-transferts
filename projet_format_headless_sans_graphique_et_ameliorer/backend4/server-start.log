@@ -1,0 +1,22 @@
+Fri Oct 24 04:08:06 UTC 2025: === DEMARRAGE SERVEUR AVEC OPTIMISATION ===
+Fri Oct 24 04:08:06 UTC 2025: Nettoyage des processus existants...
+Fri Oct 24 04:08:06 UTC 2025: Aucun processus server.js trouve
+Fri Oct 24 04:08:06 UTC 2025: Aucun processus WhatsApp trouve
+Fri Oct 24 04:08:09 UTC 2025: === ETAT MEMOIRE ===
+               total        used        free      shared  buff/cache   available
+Mem:           1.9Gi       958Mi       357Mi       168Ki       807Mi       1.0Gi
+Swap:          2.5Gi       403Mi       2.1Gi
+Fri Oct 24 04:08:09 UTC 2025: Verification SWAP...
+Fri Oct 24 04:08:09 UTC 2025: SWAP deja active
+Fri Oct 24 04:08:09 UTC 2025: Redemarrage MongoDB...
+Fri Oct 24 04:08:17 UTC 2025: Test connexion MongoDB...
+Fri Oct 24 04:08:18 UTC 2025: MongoDB pret
+Fri Oct 24 04:08:18 UTC 2025: Nettoyage des logs...
+Fri Oct 24 04:08:18 UTC 2025: Logs nettoyes
+Fri Oct 24 04:08:18 UTC 2025: === ETAT FINAL MEMOIRE ===
+               total        used        free      shared  buff/cache   available
+Mem:           1.9Gi       997Mi       124Mi       172Ki       1.0Gi       970Mi
+Swap:          2.5Gi       332Mi       2.2Gi
+Fri Oct 24 04:08:18 UTC 2025: === DEMARRAGE APPLICATION ===
+Fri Oct 24 04:08:18 UTC 2025: Lancement: node server.js
+Fri Oct 24 04:08:18 UTC 2025: Logs detaillees dans: server-start.log

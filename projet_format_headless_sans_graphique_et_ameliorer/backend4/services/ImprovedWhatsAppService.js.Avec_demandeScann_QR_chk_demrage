@@ -1,0 +1,302 @@
+// =====================================================
+// SERVICE WHATSAPP - VERSION FORCE NEW SESSION
+// =====================================================
+
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const fs = require('fs');
+const path = require('path');
+
+class ImprovedWhatsAppService {
+  constructor() {
+    this.client = null;
+    this.isReady = false;
+    this.qrCodeGenerated = false;
+    
+    // FORCER une nouvelle session à chaque fois
+    this.sessionPath = this.createNewSessionPath();
+    this.clientId = this.generateClientId();
+    
+    console.log('🆕 NOUVELLE SESSION FORCÉE');
+    console.log('📱 ID Client:', this.clientId);
+    console.log('📁 Dossier session:', this.sessionPath);
+    
+    this.initializeClient();
+  }
+
+  // Créer un NOUVEAU chemin de session à chaque fois
+  createNewSessionPath() {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substring(2, 10);
+    const newPath = path.join(__dirname, `../.whatsapp_session_${timestamp}_${random}`);
+    
+    // Supprimer s'il existe déjà
+    if (fs.existsSync(newPath)) {
+      fs.rmSync(newPath, { recursive: true, force: true });
+    }
+    
+    return newPath;
+  }
+
+  // Générer un ID client unique
+  generateClientId() {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substring(2, 15);
+    return `force-new-session-${timestamp}-${random}`;
+  }
+
+  initializeClient() {
+    console.log('🔄 INITIALISATION WHATSAPP - FORCAGE NOUVELLE SESSION');
+    
+    // Configuration avec session FORCÉE
+    this.client = new Client({
+      authStrategy: new LocalAuth({
+        dataPath: this.sessionPath,
+        clientId: this.clientId
+      }),
+      puppeteer: {
+        executablePath: '/usr/bin/chromium-browser',
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--disable-software-rasterizer',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=Translate,BackForwardCache',
+          '--disable-ipc-flooding-protection',
+          '--no-default-browser-check',
+          '--disable-default-apps',
+          '--disable-sync',
+          '--no-experiments',
+          '--disable-translate',
+          '--disable-extensions',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-component-update',
+          '--disable-breakpad',
+          '--disable-crash-reporter',
+          '--disable-back-forward-cache',
+          '--disable-domain-reliability',
+          '--disable-print-preview',
+          '--remote-debugging-port=0',
+          '--user-data-dir=/tmp/chrome-temp-' + Date.now()  // FORCER nouveau profil
+        ],
+        env: {
+          ...process.env,
+          DISPLAY: ':99'
+        }
+      }
+    });
+
+    // QR Code - TOUJOURS affiché
+    this.client.on('qr', (qr) => {
+      console.log('\n🔐 🔐 🔐 NOUVEAU QR CODE OBLIGATOIRE 🔐 🔐 🔐');
+      console.log('==============================================');
+      console.log('📱 OUVREZ WHATSAPP > MENU > APPAREILS CONNECTÉS');
+      console.log('📱 PUIS > CONNECTER UN APPAREIL');
+      console.log('🆕 SCANNEZ CE QR CODE POUR NOUVELLE SESSION');
+      console.log('==============================================');
+      qrcode.generate(qr, { small: true });
+      console.log('==============================================');
+      console.log('⏰ QR Code valable 60 secondes');
+      console.log('💡 Fermez WhatsApp sur votre téléphone et rouvrez-le si besoin');
+      
+      this.qrCodeGenerated = true;
+    });
+
+    // Authentification réussie
+    this.client.on('authenticated', () => {
+      console.log('✅ Authentification réussie avec nouvelle session');
+      console.log('📱 ID Session:', this.clientId);
+    });
+
+    // Client prêt
+    this.client.on('ready', () => {
+      console.log('🚀 WHATSAPP PRÊT - Nouvelle session active');
+      this.isReady = true;
+    });
+
+    // Échec authentification
+    this.client.on('auth_failure', (msg) => {
+      console.error('❌ Échec auth:', msg);
+      this.isReady = false;
+    });
+
+    // Déconnexion
+    this.client.on('disconnected', (reason) => {
+      console.log('🔌 Déconnecté:', reason);
+      this.isReady = false;
+    });
+
+    // Chargement
+    this.client.on('loading_screen', (percent, message) => {
+      console.log(`📱 Chargement: ${percent}% - ${message}`);
+    });
+
+    // Initialiser
+    console.log('🎯 Démarrage du client WhatsApp...');
+    this.client.initialize().catch(err => {
+      console.error('❌ Erreur init:', err);
+    });
+  }
+
+  // Fonction pour forcer manuellement un nouveau QR
+  async forceQRCode() {
+    console.log('🔄 DEMANDE MANUELLE DE NOUVEAU QR CODE');
+    
+    if (this.client) {
+      await this.client.destroy();
+      console.log('✅ Ancienne session détruite');
+    }
+    
+    // Attendre un peu
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Recréer avec nouveau ID
+    this.clientId = this.generateClientId();
+    this.sessionPath = this.createNewSessionPath();
+    this.isReady = false;
+    this.qrCodeGenerated = false;
+    
+    console.log('🆕 NOUVEAU ID:', this.clientId);
+    this.initializeClient();
+    
+    return { success: true, message: 'Nouveau QR code demandé' };
+  }
+
+  // Vérifier statut
+  getStatus() {
+    return {
+      isReady: this.isReady,
+      qrCodeGenerated: this.qrCodeGenerated,
+      clientId: this.clientId,
+      sessionPath: this.sessionPath
+    };
+  }
+
+  // Fonction pour formater le numéro de téléphone
+  formatPhoneNumber(phone) {
+    let cleaned = phone.replace(/[^0-9+]/g, '');
+    if (cleaned.startsWith('+')) {
+      cleaned = cleaned.substring(1);
+    }
+    return `${cleaned}@c.us`;
+  }
+
+  // Vérifier si le client est prêt
+  async waitForReady(timeout = 60000) {
+    const startTime = Date.now();
+    while (!this.isReady) {
+      if (Date.now() - startTime > timeout) {
+        throw new Error('Timeout: Client WhatsApp non prêt');
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return true;
+  }
+
+  // Envoyer un message
+  async sendMessage(phoneNumber, message) {
+    try {
+      console.log('\n📤 Envoi message...');
+      await this.waitForReady();
+
+      const chatId = this.formatPhoneNumber(phoneNumber);
+      console.log('📞 Numéro:', chatId);
+
+      const isRegistered = await this.client.isRegisteredUser(chatId);
+      if (!isRegistered) {
+        return {
+          success: false,
+          error: 'Numéro non enregistré sur WhatsApp'
+        };
+      }
+
+      const sentMessage = await this.client.sendMessage(chatId, message);
+      console.log('✅ Message envoyé');
+
+      return {
+        success: true,
+        messageId: sentMessage.id._serialized,
+        timestamp: sentMessage.timestamp
+      };
+
+    } catch (error) {
+      console.error('❌ Erreur:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Envoyer un message de confirmation de voyage
+  async sendTravelConfirmation(clientData) {
+    const paysFormatted = Array.isArray(clientData.pays) 
+      ? clientData.pays.join(', ') 
+      : clientData.pays;
+
+    const message = `Bonjour *${clientData.prenom} ${clientData.nom}*,
+
+Nous avons bien reçu vos *documents de voyage* pour *${paysFormatted}*.
+
+Notre équipe examine actuellement votre dossier.
+
+Vous serez recontacté(e) sous *48h maximum*.
+
+Merci de votre confiance ! 
+
+_DataCollectApp - Soumission de documents en ligne_`;
+
+    return await this.sendMessage(clientData.telephone, message);
+  }
+
+  // Envoyer un message de confirmation de transfert
+  async sendTransferConfirmation(clientData) {
+    const entrepriseLine = clientData.entreprise && clientData.entreprise.trim() !== '' 
+      ? `*Entreprise:* _${clientData.entreprise}_\n` 
+      : '';
+
+    const message = `Bonjour *${clientData.prenom} ${clientData.nom}*,
+
+Nous avons bien reçu votre *dossier de transfert* :
+_${clientData.typeTransfert}_
+${entrepriseLine}
+Notre équipe examine actuellement votre demande.
+
+Vous serez recontacté(e) sous *48h maximum*.
+
+Merci de votre confiance ! 
+
+_DataCollectApp - Soumission de documents en ligne_`;
+
+    return await this.sendMessage(clientData.telephone, message);
+  }
+
+  // Fonction automatique
+  async sendAutoNotification(formData, type) {
+    console.log('\n🤖 ENVOI AUTO WHATSAPP -', type);
+    try {
+      let result;
+      if (type === 'voyage') {
+        result = await this.sendTravelConfirmation(formData);
+      } else {
+        result = await this.sendTransferConfirmation(formData);
+      }
+      return result;
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+}
+
+module.exports = new ImprovedWhatsAppService();

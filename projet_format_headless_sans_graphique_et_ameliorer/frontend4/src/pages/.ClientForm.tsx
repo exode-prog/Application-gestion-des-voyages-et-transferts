@@ -1,0 +1,634 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Phone, AlertCircle } from 'lucide-react';
+
+// Fonction pour convertir le code pays en emoji drapeau
+const getFlagEmoji = (countryCode) => {
+  if (!countryCode) return '';
+  const codePoints = countryCode
+    .toUpperCase()
+    .split('')
+    .map(char => 127397 + char.charCodeAt());
+  return String.fromCodePoint(...codePoints);
+};
+
+const raisonsVoyage = [
+  { value: 'mission', label: 'Mission' },
+  { value: 'formation', label: 'Formation' },
+  { value: 'etudes', label: 'Études' },
+  { value: 'autres', label: 'Autres' },
+];
+
+const typesTransfert = [
+  'Allocation de devises pour les opérations de faibles montants',
+  'Achat de bien',
+  'Achat de services',
+  'Frais d\'assistance technique',
+  'Importation de billets étrangers',
+  'Allocation de devises aux voyageurs',
+  'Revenus du travail (exclusivement pour les résidents étrangers et les non résidents)',
+];
+
+export default function ClientForm() {
+  const [activeTab, setActiveTab] = useState('voyage');
+  const [countries, setCountries] = useState([]);
+  const [loadingCountries, setLoadingCountries] = useState(true);
+  const [formData, setFormData] = useState({
+    nom: '',
+    prenom: '',
+    email: '',
+    telephone: '',
+    pays: '',
+    raison: '',
+    autreRaison: '',
+    profession: '',
+    sexe: '',
+    dateDebut: '',
+    dateFin: '',
+    typeTransfert: '',
+  });
+  const [files, setFiles] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [showFileSizeError, setShowFileSizeError] = useState(false);
+  const [oversizedFileName, setOversizedFileName] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Charger la liste des pays depuis l'API REST Countries
+  useEffect(() => {
+    const fetchCountries = async () => {
+      try {
+        const response = await fetch('https://restcountries.com/v3.1/all');
+        const data = await response.json();
+        
+        // Traductions en français des noms de pays
+        const formattedCountries = data.map(country => ({
+          code: country.cca2,
+          name: country.translations?.fra?.common || country.name.common,
+          flag: getFlagEmoji(country.cca2)
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+        
+        setCountries(formattedCountries);
+        setLoadingCountries(false);
+      } catch (error) {
+        console.error('Erreur lors du chargement des pays:', error);
+        setLoadingCountries(false);
+      }
+    };
+
+    fetchCountries();
+  }, []);
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    if (errors[name]) {
+      setErrors(prev => ({ ...prev, [name]: '' }));
+    }
+  };
+
+  const handleFileSelect = (selectedFiles) => {
+    if (!selectedFiles) return;
+    const newFiles = Array.from(selectedFiles);
+    const maxSize = 100 * 1024 * 1024;
+    
+    const invalidFiles = newFiles.filter(file => file.size > maxSize);
+    if (invalidFiles.length > 0) {
+      setOversizedFileName(invalidFiles[0].name);
+      setShowFileSizeError(true);
+      return;
+    }
+    
+    const validFiles = newFiles.filter(file => file.size <= maxSize);
+    setFiles(prev => [...prev, ...validFiles]);
+    if (errors.files) {
+      setErrors(prev => ({ ...prev, files: '' }));
+    }
+  };
+
+  const removeFile = (index) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    handleFileSelect(e.dataTransfer.files);
+  };
+
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const validateForm = () => {
+    const newErrors = {};
+    if (!formData.nom.trim()) newErrors.nom = 'Le nom est requis';
+    if (!formData.prenom.trim()) newErrors.prenom = 'Le prénom est requis';
+    if (!formData.email.trim()) newErrors.email = 'L\'email est requis';
+    if (!formData.telephone.trim()) newErrors.telephone = 'Le téléphone est requis';
+    if (!formData.profession.trim()) newErrors.profession = 'La profession est requise';
+    if (!formData.sexe) newErrors.sexe = 'Le sexe est requis';
+    if (!formData.dateDebut) newErrors.dateDebut = 'La date de début est requise';
+    if (!formData.dateFin) newErrors.dateFin = 'La date de fin est requise';
+    
+    if (activeTab === 'voyage') {
+      if (!formData.pays) newErrors.pays = 'Le pays est requis';
+      if (!formData.raison) newErrors.raison = 'La raison du voyage est requise';
+      if (formData.raison === 'autres' && !formData.autreRaison.trim()) {
+        newErrors.autreRaison = 'Veuillez préciser la raison';
+      }
+    } else {
+      if (!formData.typeTransfert) newErrors.typeTransfert = 'Le type de transfert est requis';
+    }
+
+    if (files.length === 0) newErrors.files = 'Au moins un fichier est requis';
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const sendWhatsAppMessage = async (telephone, type) => {
+    try {
+      const message = type === 'voyage' 
+        ? `Bonjour ${formData.prenom} ${formData.nom}, nous avons bien reçu vos documents de voyage. Notre équipe les examine actuellement. Nous vous contacterons bientôt.`
+        : `Bonjour ${formData.prenom} ${formData.nom}, nous avons bien reçu votre dossier de transfert (${formData.typeTransfert}). Notre équipe l'examine actuellement. Nous vous contacterons bientôt.`;
+      
+      const phoneNumber = telephone.replace(/[^0-9]/g, '');
+      
+      console.log('Envoi WhatsApp automatique vers:', phoneNumber);
+      console.log('Message:', message);
+      
+    } catch (error) {
+      console.error('Erreur lors de l\'envoi WhatsApp:', error);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+    
+    setIsSubmitting(true);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      await sendWhatsAppMessage(formData.telephone, activeTab);
+      setShowSuccess(true);
+    } catch (error) {
+      console.error('Erreur:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({
+      nom: '', prenom: '', email: '', telephone: '', pays: '', raison: '',
+      autreRaison: '', profession: '', sexe: '', dateDebut: '', dateFin: '', typeTransfert: '',
+    });
+    setFiles([]);
+    setErrors({});
+    setShowSuccess(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-100 p-4">
+      <div className="max-w-5xl mx-auto">
+        <div className="bg-white/90 backdrop-blur-sm rounded-3xl shadow-xl p-8 mb-6">
+          <div className="flex items-center justify-center space-x-4 mb-4">
+            <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-blue-400 rounded-2xl flex items-center justify-center shadow-lg">
+              <span className="text-white text-3xl font-bold">DC</span>
+            </div>
+            <div>
+              <h1 className="text-4xl font-extrabold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">
+                DataCollectApp
+              </h1>
+              <p className="text-blue-600 font-medium">Soumission de documents en ligne</p>
+            </div>
+          </div>
+          
+          <div className="text-center mt-4">
+            <a 
+              href="/documents/formulaire-limite.pdf" 
+              className="text-blue-600 hover:text-blue-800 underline text-sm"
+              download
+            >
+              Vous pouvez également télécharger le formulaire de limite ici
+            </a>
+          </div>
+        </div>
+
+        <div className="bg-white/90 backdrop-blur-sm rounded-3xl shadow-xl overflow-hidden">
+          <div className="flex border-b border-gray-200">
+            <button
+              onClick={() => setActiveTab('voyage')}
+              className={`flex-1 py-4 px-6 font-semibold transition-all ${
+                activeTab === 'voyage'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              Soumettre vos documents de voyage
+            </button>
+            <button
+              onClick={() => setActiveTab('transfert')}
+              className={`flex-1 py-4 px-6 font-semibold transition-all ${
+                activeTab === 'transfert'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              Soumettre un dossier de transfert
+            </button>
+          </div>
+
+          <div className="p-8">
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Nom <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="nom"
+                    value={formData.nom}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.nom ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                    placeholder="Votre nom"
+                  />
+                  {errors.nom && <p className="text-red-500 text-sm mt-1">{errors.nom}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Prénom <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="prenom"
+                    value={formData.prenom}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.prenom ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                    placeholder="Votre prénom"
+                  />
+                  {errors.prenom && <p className="text-red-500 text-sm mt-1">{errors.prenom}</p>}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Email <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="email"
+                    name="email"
+                    value={formData.email}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.email ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                    placeholder="votre.email@exemple.com"
+                  />
+                  {errors.email && <p className="text-red-500 text-sm mt-1">{errors.email}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center">
+                    <Phone className="w-4 h-4 mr-2 text-green-600" />
+                    WhatsApp <span className="text-red-500 ml-1">*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    name="telephone"
+                    value={formData.telephone}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.telephone ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                    placeholder="+221 XX XXX XX XX"
+                  />
+                  {errors.telephone && <p className="text-red-500 text-sm mt-1">{errors.telephone}</p>}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Profession <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="profession"
+                    value={formData.profession}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.profession ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                    placeholder="Votre profession"
+                  />
+                  {errors.profession && <p className="text-red-500 text-sm mt-1">{errors.profession}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Sexe <span className="text-red-500">*</span>
+                  </label>
+                  <div className="flex space-x-6 pt-3">
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="radio"
+                        name="sexe"
+                        value="H"
+                        checked={formData.sexe === 'H'}
+                        onChange={handleInputChange}
+                        className="w-5 h-5 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="ml-2 text-gray-700 font-medium">Homme</span>
+                    </label>
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="radio"
+                        name="sexe"
+                        value="F"
+                        checked={formData.sexe === 'F'}
+                        onChange={handleInputChange}
+                        className="w-5 h-5 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="ml-2 text-gray-700 font-medium">Femme</span>
+                    </label>
+                  </div>
+                  {errors.sexe && <p className="text-red-500 text-sm mt-1">{errors.sexe}</p>}
+                </div>
+              </div>
+
+              {activeTab === 'voyage' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Pays à visiter <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      name="pays"
+                      value={formData.pays}
+                      onChange={handleInputChange}
+                      disabled={loadingCountries}
+                      className={`w-full px-4 py-3 rounded-xl border-2 ${
+                        errors.pays ? 'border-red-300' : 'border-blue-100'
+                      } focus:border-blue-500 focus:outline-none ${loadingCountries ? 'opacity-50 cursor-wait' : ''}`}
+                    >
+                      <option value="" disabled>
+                        {loadingCountries ? 'Chargement des pays...' : 'Sélectionnez un pays'}
+                      </option>
+                      {countries.map(country => (
+                        <option key={country.code} value={country.code}>
+                          {country.flag} {country.name}
+                        </option>
+                      ))}
+                    </select>
+                    {errors.pays && <p className="text-red-500 text-sm mt-1">{errors.pays}</p>}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Raison du voyage <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      name="raison"
+                      value={formData.raison}
+                      onChange={handleInputChange}
+                      className={`w-full px-4 py-3 rounded-xl border-2 ${
+                        errors.raison ? 'border-red-300' : 'border-blue-100'
+                      } focus:border-blue-500 focus:outline-none`}
+                    >
+                      <option value="" disabled>Sélectionnez une raison</option>
+                      {raisonsVoyage.map(raison => (
+                        <option key={raison.value} value={raison.value}>
+                          {raison.label}
+                        </option>
+                      ))}
+                    </select>
+                    {errors.raison && <p className="text-red-500 text-sm mt-1">{errors.raison}</p>}
+                  </div>
+
+                  {formData.raison === 'autres' && (
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Précisez la raison <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        name="autreRaison"
+                        value={formData.autreRaison}
+                        onChange={handleInputChange}
+                        className={`w-full px-4 py-3 rounded-xl border-2 ${
+                          errors.autreRaison ? 'border-red-300' : 'border-blue-100'
+                        } focus:border-blue-500 focus:outline-none`}
+                        placeholder="Décrivez la raison de votre voyage"
+                      />
+                      {errors.autreRaison && <p className="text-red-500 text-sm mt-1">{errors.autreRaison}</p>}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'transfert' && (
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Type de transfert <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    name="typeTransfert"
+                    value={formData.typeTransfert}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.typeTransfert ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                  >
+                    <option value="" disabled>Sélectionnez le type de transfert</option>
+                    {typesTransfert.map((type, index) => (
+                      <option key={index} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                  {errors.typeTransfert && <p className="text-red-500 text-sm mt-1">{errors.typeTransfert}</p>}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Date de début <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    name="dateDebut"
+                    value={formData.dateDebut}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.dateDebut ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                  />
+                  {errors.dateDebut && <p className="text-red-500 text-sm mt-1">{errors.dateDebut}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Date de fin <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    name="dateFin"
+                    value={formData.dateFin}
+                    onChange={handleInputChange}
+                    className={`w-full px-4 py-3 rounded-xl border-2 ${
+                      errors.dateFin ? 'border-red-300' : 'border-blue-100'
+                    } focus:border-blue-500 focus:outline-none`}
+                  />
+                  {errors.dateFin && <p className="text-red-500 text-sm mt-1">{errors.dateFin}</p>}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-3">
+                  Documents à joindre <span className="text-red-500">*</span>
+                </label>
+                <div
+                  className={`relative rounded-2xl border-3 border-dashed transition-all duration-300 cursor-pointer p-8 ${
+                    dragOver ? 'border-blue-500 bg-blue-50' : errors.files ? 'border-red-300 bg-red-50/30' : 'border-blue-200 hover:border-blue-400 bg-blue-50/30'
+                  }`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="text-center">
+                    <div className="mx-auto h-16 w-16 rounded-full bg-blue-100 flex items-center justify-center mb-4">
+                      <svg className="h-8 w-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                    </div>
+                    <p className="text-gray-700 font-medium mb-2">
+                      Glissez-déposez vos fichiers ici ou <span className="text-blue-600 font-bold">cliquez pour parcourir</span>
+                    </p>
+                  </div>
+                </div>
+                <input ref={fileInputRef} type="file" multiple onChange={(e) => handleFileSelect(e.target.files)} className="hidden" />
+                {errors.files && <p className="text-red-500 text-sm mt-2">{errors.files}</p>}
+
+                {files.length > 0 && (
+                  <div className="mt-6 space-y-3">
+                    {files.map((file, index) => (
+                      <div key={index} className="flex items-center justify-between p-4 bg-blue-50 rounded-xl border-2 border-blue-100">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-gray-900">{file.name}</p>
+                            <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => removeFile(index)} className="w-8 h-8 rounded-full bg-red-100 text-red-500 hover:bg-red-500 hover:text-white transition-all">
+                          <svg className="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-6">
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full py-4 px-8 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-bold text-lg rounded-xl hover:from-blue-700 hover:to-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:scale-105"
+                >
+                  {isSubmitting ? <span>Envoi en cours...</span> : <span>Valider et envoyer</span>}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {showFileSizeError && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-10 text-center">
+            <div className="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-red-100 mb-6">
+              <AlertCircle className="h-10 w-10 text-red-600" />
+            </div>
+            <h3 className="text-2xl font-bold text-gray-900 mb-3">Fichier trop volumineux</h3>
+            <p className="text-gray-600 mb-2">
+              Le fichier <span className="font-semibold text-gray-900">{oversizedFileName}</span> dépasse la taille maximale autorisée.
+            </p>
+            <p className="text-gray-600 mb-8">
+              Taille maximale : <span className="font-bold text-blue-600">100 MB</span>
+            </p>
+            <button onClick={() => setShowFileSizeError(false)} className="w-full py-4 px-8 bg-gradient-to-r from-red-600 to-red-500 text-white font-bold text-lg rounded-xl hover:from-red-700 hover:to-red-600 transition-all">
+              Compris
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showSuccess && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-10 text-center">
+            <div className="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-green-100 mb-6">
+              <svg className="h-10 w-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h3 className="text-3xl font-bold text-gray-900 mb-3">Envoi réussi !</h3>
+            <p className="text-gray-600 mb-2 text-lg">
+              {activeTab === 'voyage' 
+                ? 'Vos documents de voyage ont été transmis avec succès.'
+                : 'Votre dossier de transfert a été transmis avec succès.'}
+            </p>
+            <p className="text-gray-600 mb-8 flex items-center justify-center">
+              <Phone className="w-5 h-5 mr-2 text-green-600" />
+              <span className="text-sm">Un message de confirmation a été envoyé sur votre WhatsApp.</span>
+            </p>
+            <button
+              onClick={resetForm}
+              className="w-full py-4 px-8 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-bold text-lg rounded-xl hover:from-blue-700 hover:to-blue-600 transition-all"
+            >
+              Fermer
+            </button>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        .border-3 {
+          border-width: 3px;
+        }
+      `}</style>
+    </div>
+  );
+}
